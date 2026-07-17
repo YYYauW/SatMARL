@@ -1,0 +1,218 @@
+\documentclass[letterpaper]{article}
+\usepackage[submission]{aaai2027}
+\usepackage[hyphens]{url}
+\usepackage{graphicx}
+\urlstyle{rm}
+\def\UrlFont{\rm}
+\usepackage{natbib}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\frenchspacing
+\pdfinfo{/TemplateVersion (2027.1)}
+\setcounter{secnumdepth}{0}
+\iffalse
+
+\title{OASIS: Opportunity-Aware Asynchronous Multi-Agent Reinforcement Learning for Constraint-Rich Multi-Satellite Scheduling}
+\fi
+\title{OASIS-Graph: Sparse Opportunity Factorization for Large-Scale Multi-Satellite Scheduling}
+\author{Anonymous Submission}
+\affiliations{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large Earth-observation constellations create a decentralized scheduling problem in which each satellite acts under orbital, payload, resource, cooperation, and shared-station constraints.  Conventional fixed-step MARL is dominated by forced-idle transitions, while independent masked policies still collide on the few valuable tasks that become feasible.  We introduce OASIS-Graph, a unified asynchronous actor over a dynamic bipartite opportunity graph.  Feasible satellite--task edges are scored by one permutation-equivariant network using task-factor messages that summarize contender density, relative utility, and observer supply; the same score is used as both policy logit and conflict-resolution bid.  Learning is performed only at genuine agent-specific opportunities using duration-corrected semi-Markov advantages.  The actor parameter count is independent of constellation size and hard feasibility remains exact.  We evaluate 64-satellite training and zero-shot transfer to 128 and 256 satellites in a constraint-rich simulator with five-second point observations, a 120-minute horizon, and a 45-degree field of view.  Controlled ablations remove factor messages and learned bids, separating coordination from opportunity filtering and curriculum design.
+\end{abstract}
+
+\section{Introduction}
+
+An Earth-observation constellation must continuously decide which satellite should observe which target, when the observation should occur, and when the resulting data should be transmitted.  These choices are coupled by orbital access windows, three-axis attitude motion, heterogeneous payload capabilities, energy and storage limits, task deadlines, cooperative observation requirements, and shared ground-station channels.  The resulting problem is dynamic, partially observed, and combinatorial.  A plan computed once can quickly become stale when tasks arrive or resources evolve, motivating online policies that can replan at constellation scale.
+
+Multi-agent reinforcement learning (MARL) offers a natural formulation: each satellite is an agent, training can use global information, and execution can remain decentralized.  Recent work has shown the promise of learning for satellite assignment and constellation operations \cite{holder2025satellite,herrmann2024single,he2025transformer}.  However, satellite tasking has a temporal structure that is poorly matched to standard fixed-step MARL.  During most simulation ticks a satellite is forced to wait because no task or ground station is feasible.  A fixed-step rollout therefore contains many transitions at which the policy has no choice.  These rows dominate minibatches, dilute gradient estimates, and treat unequal real-time intervals as if they had equal duration.
+
+We study this mismatch through the lens of \emph{decision opportunities}.  A satellite has an opportunity only when its feasibility mask contains an action other than forced waiting.  The opportunity sequence is asynchronous across satellites and naturally induces a semi-Markov decision process (SMDP).  This observation leads to OASIS, an opportunity-aware asynchronous MARL method that learns only at genuine choice points while retaining all physical state evolution in the simulator.
+
+Our contributions are:
+\begin{itemize}
+    \item We formulate constraint-rich multi-satellite observation and downlink scheduling as a decentralized partially observed SMDP with satellite-specific, irregular decision epochs.
+    \item We introduce duration-corrected opportunity GAE and branch-balanced opportunity updates, which preserve rewards accumulated during forced waiting without training on policy-independent actions.
+    \item We introduce a sparse satellite--task opportunity factor graph whose shared edge scorer jointly defines action preferences and contention bids, providing explicit learned coordination with parameters independent of constellation size.
+    \item We provide a multi-timescale constellation environment with 30-second planning decisions and five-second point acquisitions, enforcing orbital, attitude, payload, resource, cooperative-observation, and ground-station constraints through action masks and execution-time checks.
+    \item We establish a controlled MARL evaluation against IPPO, MAPPO, QMIX, and parameter-shared DQN on identical held-out scenarios, and separately report task utility, coordination, data delivery, constraint violations, runtime, and effective policy samples.
+\end{itemize}
+
+The methodological focus is sparse asynchronous decision making in cooperative MARL; satellite scheduling supplies a demanding structured domain rather than being the only intended application.
+
+\section{Related Work}
+
+\paragraph{Multi-agent reinforcement learning.}
+Centralized training with decentralized execution (CTDE) uses information available in simulation to stabilize learning while preserving local execution.  MAPPO is a strong policy-gradient baseline for cooperative MARL \cite{yu2022mappo}, while IPPO removes the centralized critic.  Value decomposition methods instead learn local action values whose combination represents a joint value.  VDN uses an additive factorization \cite{sunehag2018vdn}, and QMIX enforces a monotonic mixing relationship \cite{rashid2018qmix}.  These algorithms typically construct synchronous fixed-step batches.  OASIS is orthogonal to the actor--critic architecture: it changes which transitions are policy decisions and how elapsed duration enters credit assignment.
+
+\paragraph{Asynchronous and event-driven RL.}
+Event-driven decision processes model agents whose temporally extended actions terminate at different times.  Prior work modifies advantage estimation for asynchronous multi-agent macro-actions and shows that arbitrarily shrinking a simulator time step is computationally undesirable \cite{menda2019event}.  OASIS shares the SMDP motivation but targets a different source of asynchrony: feasibility opportunities generated by orbital geometry and resource constraints.  Physical dynamics still advance at a fixed numerical integration interval, while policy learning is indexed by each satellite's opportunity sequence.
+
+\paragraph{Learning for satellite scheduling.}
+Single-agent policies have been deployed across constellations to trade scalability for coordination complexity \cite{herrmann2024single}.  Holder, Jaques, and Mesbahi learn values for sequential satellite assignment and retain a distributed optimal assignment mechanism \cite{holder2025satellite}.  Multi-agent transformer policies have also been considered for agile constellation mission planning \cite{he2025transformer}.  Other learning-based schedulers address ground-contact sequencing with pointer networks \cite{dobariya2026pointer}.  Our problem differs by integrating observation and downlink actions, heterogeneous payload and product constraints, multi-satellite cooperative tasks, and sparse satellite-specific decision epochs.  We compare against general MARL algorithms under this common environment instead of treating non-learning heuristics as the primary baselines.
+
+\section{Problem Formulation}
+
+Consider satellites $\mathcal{I}=\{1,\ldots,N\}$, observation tasks $\mathcal{J}=\{1,\ldots,M\}$, and ground stations $\mathcal{G}$.  Task $j$ has priority $p_j$, release and deadline $(r_j,d_j)$, target location, payload mode, resolution and swath requirements, data volume, energy cost, and a cooperation mode.  A task may require one satellite, simultaneous observations by two satellites, or sequential observations by two distinct satellites.
+
+At numerical step $t$, agent $i$ receives local observation $o_{i,t}$ containing its orbit and resource state, features of up to $K$ candidate tasks, features of dynamically related neighboring satellites, a summary of neighbor actions, and a binary feasibility mask $m_{i,t}$.  Its discrete action is
+\begin{equation}
+ a_{i,t}\in\{\textsc{Wait},\textsc{Downlink},\textsc{Task}(1),\ldots,\textsc{Task}(K)\}.
+\end{equation}
+The mask is computed by a hard feasibility planner and is checked again when the action is executed.
+
+The environment enforces task release and deadline windows; Earth line of sight, minimum elevation, and maximum off-nadir angle; roll, pitch, and yaw bounds; slew, stabilization, payload warm-up, and cool-down time; payload mode, effective resolution, swath, and sunlight; energy and storage capacity; exclusive or cooperative task assignment; ground-station visibility and channel capacity; and segmented downlink.  These constraints define the feasible joint-action set $\mathcal{A}(s_t)$.
+
+The task-aligned objective is
+\begin{equation}
+ J(\pi)=\mathbb{E}_{\pi}\!\left[
+ \sum_{j\in\mathcal{C}} p_j q_j b_j
+ + \lambda_c |\mathcal{C}|
+ + \lambda_d D
+ - \lambda_v V
+ \right],
+\end{equation}
+where $\mathcal{C}$ is the set of completed tasks, $q_j$ is observation quality, $b_j$ is a deadline bonus, $D$ is timely delivered data, and $V$ denotes constraint and conflict penalties.  Completion reward is deliberately dominant; data-volume reward is kept small so that scalar return cannot improve while the scheduler completes fewer valuable tasks.
+
+\section{OASIS}
+
+\subsection{Satellite-Specific Decision Opportunities}
+
+Let
+\begin{equation}
+ z_{i,t}=\mathbb{1}\left[\sum_{a\neq \textsc{Wait}}m_{i,t}(a)>0\right]
+\end{equation}
+indicate that satellite $i$ has a genuine choice.  Define its opportunity times $\tau_i^0<\tau_i^1<\cdots$ as the steps for which $z_{i,t}=1$.  The elapsed duration between consecutive opportunities is
+$\Delta_i^k=\tau_i^{k+1}-\tau_i^k$.
+Forced-wait rows remain in the simulator trajectory because orbit, attitude, energy, tasks, and stations continue to evolve, but they are excluded from policy optimization.
+
+This construction does not discard reward.  For opportunity $k$, rewards through the next opportunity are aggregated as
+\begin{equation}
+ R_i^k=\sum_{h=0}^{\Delta_i^k-1}\gamma^h r_{i,\tau_i^k+h}.
+\end{equation}
+The opportunity process is therefore an SMDP embedded in the fixed-step physical simulator.
+
+\subsection{Duration-Corrected Opportunity GAE}
+
+Using critic $V_\phi$, the temporal-difference residual at an opportunity is
+\begin{equation}
+ \delta_i^k=R_i^k+\gamma^{\Delta_i^k}V_\phi(s_{\tau_i^{k+1}})-V_\phi(s_{\tau_i^k}).
+\end{equation}
+We compute duration-corrected generalized advantages
+\begin{equation}
+ \hat A_i^k=\delta_i^k+
+ \gamma^{\Delta_i^k}\lambda^{\Delta_i^k}\hat A_i^{k+1}.
+\end{equation}
+Unlike fixed-step GAE, this expression discounts according to actual elapsed decision time.  The critic is centralized during training and receives the local observation concatenated with a compact global constellation summary.  The shared actor receives local information only.
+
+\subsection{Branch-Balanced Cross-Episode Updates}
+
+Sparse opportunities remain heterogeneous.  Some expose only downlink, some a single task, and some multiple competing tasks.  Uniform sampling can again be dominated by easy one-option cases.  OASIS stratifies opportunities by the number and type of feasible non-wait actions and assigns inverse-frequency weights within each update batch.
+
+An episode may contain too few opportunities for a stable PPO update.  OASIS therefore buffers complete per-episode SMDP returns without updating the policy until at least $B$ opportunity samples are available.  Since the policy does not change while the buffer is filled, stored log probabilities remain on-policy.  In our implementation $B=512$, typically producing an update every two to four episodes.
+
+\subsection{Sparse Opportunity Factor Graph}
+
+At each physical step we construct a bipartite graph $G_t=(\mathcal I_t,\mathcal J_t,\mathcal E_t)$ containing satellites with a genuine choice, currently feasible task factors, and feasible satellite--task edges.  For edge $(i,j)$, a normalized message
+\begin{equation}
+ g_{ij}=\left[\log(1+c_j),\;\bar u_j,\;u_{ij}-\bar u_j,\;\min(1,c_j/r_j)\right]
+\end{equation}
+summarizes contender count $c_j$, mean local utility $\bar u_j$, focal relative utility, and supply relative to required observers $r_j$.  Shared candidate and satellite-context encoders produce
+\begin{equation}
+ \ell_{ij}=f_\theta\!\left(h_\theta(o_i),e_\theta(x_{ij},g_{ij})\right).
+\end{equation}
+The logit $\ell_{ij}$ both parameterizes the local categorical policy and acts as the bid when several satellites claim task $j$.  Coordination is therefore learned inside one permutation-equivariant actor rather than delegated to a separately designed assignment module.  Wait and downlink use two context logits.  With fixed candidate budget $K$, actor computation is $O(|\mathcal I_t|K)$ and its parameter count is independent of $N$ and $M$.
+
+\begin{algorithm}[t]
+\caption{OASIS training}
+\label{alg:oasis}
+\begin{algorithmic}[1]
+\STATE Initialize shared actor $\pi_\theta$, centralized critic $V_\phi$, and buffer $\mathcal{B}$
+\FOR{each episode}
+  \STATE Simulate all fixed physical steps and store masks, actions, rewards, and values
+  \FOR{each satellite $i$}
+    \STATE Extract opportunity times $\{\tau_i^k:z_{i,\tau_i^k}=1\}$
+    \STATE Aggregate interval rewards and compute duration-corrected GAE
+    \STATE Add opportunity transitions to $\mathcal{B}$
+  \ENDFOR
+  \IF{$|\mathcal{B}|\geq B$}
+    \STATE Compute branch-balance weights and perform clipped PPO updates
+    \STATE Clear $\mathcal{B}$
+  \ENDIF
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\section{Constellation Environment}
+
+The main setting contains 64 heterogeneous satellites in eight randomized low-Earth-orbit planes and 3,072 point targets.  Orbit altitude is sampled from 500--650 km, eccentricity from 0--0.005, inclination from $45^\circ$--$98.2^\circ$, and right ascension is evenly separated across planes.  Two-body Kepler propagation and Earth rotation determine satellite positions.  Each episode spans 240 decision steps of 30 seconds, or 120 minutes, which covers a complete LEO orbit.  Point acquisition lasts five seconds and the sensor field of view and maximum off-nadir access angle are $45^\circ$.
+
+Targets are globally randomized in the controlled comparison.  Their windows span 20--80 minutes, and the online planner searches 15 minutes ahead.  Thirty percent of tasks require two satellites; 15\% of cooperative tasks are simultaneous and the remainder are sequential.  Sequential contributions may be separated by up to 60 minutes.  Four ground stations provide capacity-constrained segmented downlink.  Candidate pruning retains the 24 highest-scoring feasible tasks per satellite, and each observation includes six dynamically related neighbors.
+
+The simulator uses action masking for efficiency, but the same feasibility function is called again at execution.  Hence a learned policy cannot obtain good results by emitting physically invalid schedules.  We report every invalid action and window miss rather than silently repairing policy output.
+
+\section{Experimental Design}
+
+\paragraph{Research questions.}
+We ask: (RQ1) Does opportunity-aware training improve return and task utility per effective policy sample?  (RQ2) Is duration correction necessary when opportunity intervals vary?  (RQ3) Does branch balancing improve performance on multi-option and cooperative decisions?  (RQ4) Does the method remain effective as constellation and task counts increase?
+
+\paragraph{RL baselines.}
+The primary comparison consists of parameter-shared IPPO, MAPPO, QMIX, and parameter-shared Double DQN.  All use the same local observations, action masks, network width, training scenarios, episode horizon, reward, and held-out seeds.  MAPPO and OASIS use the same centralized summary for their critics.  Greedy priority, earliest deadline, random feasible, and rolling Hungarian assignment are reported only as diagnostic non-learning references.  A small-instance CP-SAT upper bound is planned for optimality-gap analysis.
+
+\paragraph{Protocol.}
+The development run uses one prespecified seed to validate the end-to-end pipeline; confirmatory runs use independent training seeds and paired held-out scenarios.  We report scenario mean and standard deviation, environment steps, effective decision samples, wall-clock time, and inference latency.  Scaling experiments train at 64 satellites and evaluate the same checkpoint without architectural changes at 128 and 256 satellites, with 48 tasks per satellite.
+
+\paragraph{Metrics.}
+Primary metrics are completed task priority and completed task count.  Secondary metrics include scalar return, cooperative task completion, observation quality, downlinked data, conflicts, invalid actions, opportunity rate, and reward per effective decision sample.  Reward decomposition separates task, downlink, team, and penalty contributions.
+
+\paragraph{Ablations.}
+We evaluate fixed-step MAPPO; the non-graph MLP opportunity learner; the graph actor without task-factor messages; the graph actor without learned contention bids; and full OASIS-Graph.  This isolates sparse-time learning, factor communication, and learned conflict resolution rather than treating their combination as an indivisible module stack.
+
+\begin{table}[t]
+\centering
+\small
+\caption{Controlled 500-episode comparison on 50 held-out global-random scenarios (mean $\pm$ standard deviation for return).}
+\label{tab:main}
+\begin{tabular}{lrrrr}
+\toprule
+Method & Return & Tasks & Priority & Coop. \\
+\midrule
+OASIS & $0.06594\pm0.01632$ & 35.88 & 210.05 & 0.92 \\
+IPPO & $0.06576\pm0.01638$ & 35.64 & 210.32 & 0.84 \\
+MAPPO & $0.06512\pm0.01648$ & 35.58 & 209.31 & 0.58 \\
+QMIX & $0.06439\pm0.01618$ & 34.76 & 207.55 & 0.98 \\
+PS-DQN & $\mathbf{0.06683\pm0.01620}$ & \textbf{36.26} & \textbf{211.90} & \textbf{1.44} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Controlled Result and Diagnostic Refinement}
+
+Table~\ref{tab:main} shows that the initial controlled suite is statistically close across algorithms; OASIS does not outperform PS-DQN.  Inspection revealed that the opportunity sampler grouped downlink-only rows with observation choices, while the controlled OASIS command disabled its adaptive curriculum.  We therefore made two prespecified, interpretable corrections: semantic inverse-frequency weighting of downlink-only, single-task, and multi-task rows, and a curriculum whose visibility-aligned fraction anneals from 0.65 to the exact global-random distribution.
+
+We trained the refined model for another 500 episodes and evaluated it together with the original OASIS and PS-DQN checkpoints on the same unseen seeds 9501--9550.  The refined method obtains return $0.06787\pm0.01229$, completes $37.22\pm6.11$ tasks, and collects priority $216.65\pm41.29$.  Relative to original OASIS, its paired task-count improvement is 0.58 (95\% CI $[0.17,0.99]$); return and priority intervals include zero.  Relative to PS-DQN, differences in return ($-0.00037$), tasks ($+0.26$), and priority ($+0.57$) are not significant.  Task-opportunity rate rises from 4.14\% to 5.21\%, but avoidable waits also rise from 126.26 to 155.38 per episode and cooperative completions fall from 0.92 to 0.74.  All three policies produce zero invalid actions and zero window misses, with 0.04 conflicts per episode.  Thus semantic balancing exposes useful task decisions and modestly improves throughput, but it does not yet establish a utility advantage over the strongest value-based baseline.
+
+\subsection{Preliminary Reward Diagnostic}
+
+Before reward alignment, a single-seed OASIS pilot was evaluated on 50 held-out scenarios.  It achieved return $0.0508\pm0.0105$, compared with $0.0483\pm0.0120$ for rolling assignment, but completed 38.46 rather than 40.66 tasks on average.  This diagnostic exposed a reward mismatch: data delivery could improve scalar return without improving the scheduling objective.  We therefore reduced per-megabyte reward, added an explicit task completion bonus, logged reward decomposition, and made task priority and count the primary metrics.  We report this pilot only to document model selection; it is not used as evidence for the final claim in Table~\ref{tab:main}.
+
+\IfFileExists{generated_graph_results.tex}{\input{generated_graph_results.tex}}{\paragraph{Large-scale results pending.} The reproducible pipeline writes this subsection automatically after all independent evaluations complete.}
+
+\section{Limitations and Scope}
+
+The environment uses two-body propagation rather than TLE/SGP4 or high-fidelity perturbation models.  Weather, cloud cover, thermal dynamics, inter-satellite routing, and execution failure are not yet modeled.  Planning decisions occur every 30 seconds, so the environment represents a five-second observation within a coarser online decision interval and does not schedule multiple acquisitions by one satellite inside the same interval.  Candidate pruning may hide a feasible low-ranked task.  Finally, simultaneous cooperation remains difficult without explicit communication of target identity; the present observation contains neighboring state and prior action categories but no learned message channel.  These assumptions are stated explicitly and the code exposes all parameters required to reproduce them.
+
+\section{Conclusion}
+
+We presented OASIS, an opportunity-aware asynchronous MARL formulation for constraint-rich multi-satellite scheduling.  Physical time always advances, but policy updates are indexed by genuine agent-specific choices.  Per-agent opportunity sequences, duration-corrected GAE, semantic opportunity balancing, and cross-episode on-policy accumulation form a tractable decentralized SMDP learner.  Controlled experiments show a small, statistically supported task-throughput gain over the unrefined learner while remaining tied with PS-DQN in scalar utility.  This result narrows the next technical problem to avoiding unnecessary waits and improving explicit cooperative coordination at newly exposed opportunities.  Beyond satellite scheduling, the construction applies to cooperative systems with irregular, feasibility-driven decision epochs.
+
+\bibliography{references}
+\end{document}

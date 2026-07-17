@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satellite MARL Evaluation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101316;
+      --panel: #191f26;
+      --panel-2: #202833;
+      --line: #344052;
+      --text: #edf2f7;
+      --muted: #9aa7b6;
+      --active: #f7c948;
+      --done: #35d09f;
+      --expired: #ff6b6b;
+      --pending: #65758a;
+      --sat: #7dc7ff;
+      --station: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: #151a20;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 680;
+      letter-spacing: 0;
+    }
+    main {
+      width: min(1500px, calc(100vw - 28px));
+      margin: 14px auto 28px;
+      display: grid;
+      grid-template-columns: minmax(680px, 1.8fr) minmax(340px, 0.9fr);
+      gap: 14px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: auto auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      width: 36px;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-2);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 15px;
+    }
+    button:hover { border-color: var(--sat); }
+    .view-switch {
+      display: inline-grid;
+      grid-template-columns: repeat(2, minmax(92px, auto));
+      gap: 2px;
+      margin-top: 10px;
+      padding: 3px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .view-switch button {
+      width: auto;
+      min-width: 92px;
+      border-color: transparent;
+      background: transparent;
+      font-size: 12px;
+      padding: 0 12px;
+    }
+    .view-switch button.active {
+      color: #101316;
+      background: var(--sat);
+      border-color: var(--sat);
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--sat);
+    }
+    canvas {
+      width: 100%;
+      height: min(72vh, 760px);
+      min-height: 520px;
+      display: block;
+      margin-top: 12px;
+      background: #121821;
+      border-radius: 6px;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .card {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .value {
+      font-size: 22px;
+      font-weight: 720;
+      overflow-wrap: anywhere;
+      letter-spacing: 0;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      color: var(--muted);
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 6px;
+      vertical-align: -1px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th, td {
+      padding: 7px 5px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 620; }
+    td { color: #dce7f2; overflow-wrap: anywhere; }
+    .muted { color: var(--muted); }
+    .mono { font-family: Consolas, "SFMono-Regular", monospace; }
+    .error {
+      display: none;
+      color: var(--expired);
+      border: 1px solid rgba(255, 107, 107, 0.5);
+      background: rgba(255, 107, 107, 0.08);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+    }
+    @media (max-width: 1100px) {
+      main { grid-template-columns: 1fr; }
+      canvas { min-height: 420px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Satellite MARL Evaluation Replay</h1>
+    <div class="muted mono" id="source">waiting for rollout</div>
+  </header>
+  <main>
+    <section class="panel">
+      <div id="error" class="error"></div>
+      <div class="toolbar">
+        <button id="play" title="播放/暂停">▶</button>
+        <button id="prev" title="上一步">‹</button>
+        <input id="slider" type="range" min="0" max="0" value="0">
+        <button id="next" title="下一步">›</button>
+      </div>
+      <div class="view-switch" role="group" aria-label="Visualization mode">
+        <button id="mapView" class="active" type="button">地图</button>
+        <button id="globeView" type="button">轨道球</button>
+      </div>
+      <canvas id="scene"></canvas>
+      <div class="legend">
+        <span><i class="swatch" style="background:var(--sat)"></i>satellite</span>
+        <span><i class="swatch" style="background:var(--station)"></i>ground station</span>
+        <span><i class="swatch" style="background:var(--active)"></i>active task</span>
+        <span><i class="swatch" style="background:var(--done)"></i>completed</span>
+        <span><i class="swatch" style="background:var(--expired)"></i>expired</span>
+        <span><i class="swatch" style="background:var(--pending)"></i>pending</span>
+      </div>
+    </section>
+    <aside class="panel">
+      <div class="cards">
+        <div class="card"><div class="label">Step</div><div id="step" class="value">-</div></div>
+        <div class="card"><div class="label">Completed</div><div id="completed" class="value">-</div></div>
+        <div class="card"><div class="label">Expired</div><div id="expired" class="value">-</div></div>
+        <div class="card"><div class="label">Conflicts</div><div id="conflicts" class="value">-</div></div>
+        <div class="card"><div class="label">Reward</div><div id="reward" class="value">-</div></div>
+        <div class="card"><div class="label">Priority</div><div id="priority" class="value">-</div></div>
+      </div>
+      <table>
+        <tbody id="info"></tbody>
+      </table>
+      <h2 style="font-size:14px;margin:16px 0 8px;">Events</h2>
+      <table>
+        <thead>
+          <tr><th>Agent</th><th>Event</th><th>Task</th><th>Detail</th></tr>
+        </thead>
+        <tbody id="events"></tbody>
+      </table>
+    </aside>
+  </main>
+  <script>
+    const requestedRun = new URLSearchParams(window.location.search).get("run") || "realistic";
+    const runPath = /^[a-zA-Z0-9_/-]+$/.test(requestedRun) ? requestedRun : "realistic";
+    const state = { data: null, index: 0, playing: false, timer: null, viewMode: "map" };
+    const el = {
+      source: document.getElementById("source"),
+      error: document.getElementById("error"),
+      play: document.getElementById("play"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      slider: document.getElementById("slider"),
+      mapView: document.getElementById("mapView"),
+      globeView: document.getElementById("globeView"),
+      scene: document.getElementById("scene"),
+      step: document.getElementById("step"),
+      completed: document.getElementById("completed"),
+      expired: document.getElementById("expired"),
+      conflicts: document.getElementById("conflicts"),
+      reward: document.getElementById("reward"),
+      priority: document.getElementById("priority"),
+      info: document.getElementById("info"),
+      events: document.getElementById("events")
+    };
+    const css = getComputedStyle(document.documentElement);
+    const color = name => css.getPropertyValue(name).trim();
+    const fmt = new Intl.NumberFormat("zh-CN");
+    const int = v => Number.isFinite(Number(v)) ? fmt.format(Math.round(Number(v))) : "-";
+    const num = (v, d = 3) => Number.isFinite(Number(v)) ? Number(v).toFixed(d) : "-";
+
+    function taskSets(frame) {
+      return {
+        completed: new Set(frame.completed_ids || []),
+        expired: new Set(frame.expired_ids || []),
+        active: new Set(frame.active_ids || [])
+      };
+    }
+
+    function resizeCanvas() {
+      const rect = el.scene.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      el.scene.width = Math.floor(rect.width * dpr);
+      el.scene.height = Math.floor(rect.height * dpr);
+      const ctx = el.scene.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return { ctx, w: rect.width, h: rect.height };
+    }
+
+    function project(longitude, latitude, w, h) {
+      return [
+        (Number(longitude) + 180) / 360 * w,
+        (90 - Number(latitude)) / 180 * h
+      ];
+    }
+
+    function taskStyle(task, sets) {
+      let fill = color("--pending");
+      let size = 2.2;
+      if (sets.active.has(task.id)) { fill = color("--active"); size = 3.4; }
+      if (sets.completed.has(task.id)) { fill = color("--done"); size = 2.8; }
+      if (sets.expired.has(task.id)) { fill = color("--expired"); size = 2.8; }
+      return { fill, size };
+    }
+
+    function drawMap(ctx, w, h, frame, sets, tasks, sats) {
+      ctx.strokeStyle = "#314052";
+      ctx.lineWidth = 1;
+      for (let lon = -180; lon <= 180; lon += 30) {
+        const [x] = project(lon, 0, w, h);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const [, y] = project(0, lat, w, h);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#5a6a7d";
+      ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+
+      for (const task of tasks) {
+        const [x, y] = project(task.longitude, task.latitude, w, h);
+        const style = taskStyle(task, sets);
+        ctx.fillStyle = style.fill;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.arc(x, y, style.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      for (const station of state.data.ground_stations || []) {
+        const [x, y] = project(station.longitude, station.latitude, w, h);
+        ctx.strokeStyle = color("--station");
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(x - 4, y);
+        ctx.lineTo(x + 4, y);
+        ctx.moveTo(x, y - 4);
+        ctx.lineTo(x, y + 4);
+        ctx.stroke();
+      }
+
+      for (const sat of sats) {
+        const [x, y] = project(sat.longitude, sat.latitude, w, h);
+        ctx.fillStyle = sat.busy ? "#e0b15c" : color("--sat");
+        ctx.beginPath();
+        ctx.arc(x, y, sat.busy ? 3.1 : 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function globeProject(longitude, latitude, altitudeKm, cx, cy, radius, centerLon) {
+      const lat = Number(latitude) * Math.PI / 180;
+      let deltaLon = (Number(longitude) - centerLon) * Math.PI / 180;
+      deltaLon = Math.atan2(Math.sin(deltaLon), Math.cos(deltaLon));
+      const depth = Math.cos(lat) * Math.cos(deltaLon);
+      const altitudeScale = 1 + Math.max(0, Number(altitudeKm) || 0) / 6378.137;
+      return {
+        visible: depth >= 0,
+        depth,
+        x: cx + radius * altitudeScale * Math.cos(lat) * Math.sin(deltaLon),
+        y: cy - radius * altitudeScale * Math.sin(lat)
+      };
+    }
+
+    function strokeGlobeCurve(ctx, samples) {
+      ctx.beginPath();
+      let drawing = false;
+      for (const point of samples) {
+        if (!point.visible) { drawing = false; continue; }
+        if (!drawing) ctx.moveTo(point.x, point.y); else ctx.lineTo(point.x, point.y);
+        drawing = true;
+      }
+      ctx.stroke();
+    }
+
+    function drawGlobe(ctx, w, h, frame, sets, tasks, sats) {
+      const cx = w / 2;
+      const cy = h / 2;
+      const radius = Math.min(w, h) * 0.33;
+      const centerLon = ((frame.step * 4 + 180) % 360) - 180;
+      const planes = Math.max(1, Number(state.data.env_config?.num_planes) || 1);
+
+      ctx.strokeStyle = "#304154";
+      ctx.lineWidth = 1;
+      for (let plane = 0; plane < Math.min(planes, 12); plane++) {
+        const tilt = -0.65 + 1.3 * plane / Math.max(1, Math.min(planes, 12) - 1);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, radius * 1.24, radius * (0.24 + 0.18 * Math.abs(tilt)), tilt, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#182b3a";
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#6b8196";
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.strokeStyle = "#355168";
+      ctx.lineWidth = 0.8;
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const samples = [];
+        for (let lon = centerLon - 90; lon <= centerLon + 90; lon += 3) {
+          samples.push(globeProject(lon, lat, 0, cx, cy, radius, centerLon));
+        }
+        strokeGlobeCurve(ctx, samples);
+      }
+      for (let offset = -60; offset <= 60; offset += 30) {
+        const samples = [];
+        for (let lat = -90; lat <= 90; lat += 3) {
+          samples.push(globeProject(centerLon + offset, lat, 0, cx, cy, radius, centerLon));
+        }
+        strokeGlobeCurve(ctx, samples);
+      }
+      ctx.restore();
+
+      for (const task of tasks) {
+        const point = globeProject(task.longitude, task.latitude, 0, cx, cy, radius, centerLon);
+        if (!point.visible) continue;
+        const style = taskStyle(task, sets);
+        ctx.fillStyle = style.fill;
+        ctx.globalAlpha = 0.55 + 0.45 * point.depth;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, style.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      for (const station of state.data.ground_stations || []) {
+        const point = globeProject(station.longitude, station.latitude, 0, cx, cy, radius, centerLon);
+        if (!point.visible) continue;
+        ctx.strokeStyle = color("--station");
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(point.x - 4, point.y);
+        ctx.lineTo(point.x + 4, point.y);
+        ctx.moveTo(point.x, point.y - 4);
+        ctx.lineTo(point.x, point.y + 4);
+        ctx.stroke();
+      }
+
+      const visibleSats = sats
+        .map(sat => ({ sat, point: globeProject(sat.longitude, sat.latitude, sat.altitude_km, cx, cy, radius, centerLon) }))
+        .filter(item => item.point.visible)
+        .sort((a, b) => a.point.depth - b.point.depth);
+      for (const { sat, point } of visibleSats) {
+        ctx.fillStyle = sat.busy ? "#e0b15c" : color("--sat");
+        ctx.globalAlpha = 0.55 + 0.45 * point.depth;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, sat.busy ? 3.4 : 2.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function draw() {
+      if (!state.data) return;
+      const frame = state.data.frames[state.index];
+      const { ctx, w, h } = resizeCanvas();
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#121821";
+      ctx.fillRect(0, 0, w, h);
+      const sets = taskSets(frame);
+      const tasks = state.data.tasks || [];
+      const sats = frame.satellites || [];
+      if (state.viewMode === "globe") {
+        drawGlobe(ctx, w, h, frame, sets, tasks, sats);
+      } else {
+        drawMap(ctx, w, h, frame, sets, tasks, sats);
+      }
+
+      ctx.fillStyle = "#dbe7f3";
+      ctx.font = "12px system-ui";
+      ctx.fillText(`step ${frame.step}`, 14, 22);
+      ctx.fillStyle = "#9aa7b6";
+      ctx.fillText(`${sats.length} satellites / ${tasks.length} tasks / ${(state.data.ground_stations || []).length} stations`, 14, 40);
+    }
+
+    function renderSide() {
+      if (!state.data) return;
+      const frame = state.data.frames[state.index];
+      const s = frame.summary || {};
+      el.step.textContent = `${frame.step}/${state.data.frames.length - 1}`;
+      el.completed.textContent = int(s.completed_tasks);
+      el.expired.textContent = int(s.expired_tasks);
+      el.conflicts.textContent = int(s.total_conflicts);
+      el.reward.textContent = num(frame.step_reward, 3);
+      el.priority.textContent = num(s.total_priority_completed, 1);
+      el.slider.max = String(state.data.frames.length - 1);
+      el.slider.value = String(state.index);
+      el.source.textContent = `checkpoint ep ${state.data.checkpoint_episode ?? "-"} · seed ${state.data.seed}`;
+      const cfg = state.data.env_config || {};
+      const algorithm = state.data.algorithm || {};
+      el.info.innerHTML = [
+        ["algorithm", algorithm.name],
+        ["satellites", cfg.num_satellites],
+        ["tasks", cfg.num_tasks],
+        ["mean energy", num(s.mean_energy, 2)],
+        ["mean storage", num(s.mean_storage, 2)],
+        ["mean quality", num(s.mean_observation_quality, 3)],
+        ["pending data MB", num(s.pending_data_mb, 1)],
+        ["downlinked MB", num(s.downlinked_data_mb, 1)],
+        ["ground conflicts", int(s.total_ground_conflicts)],
+        ["busy sats", s.busy_satellites],
+        ["mean eval reward", num(state.data.mean_episode_reward, 3)]
+      ].map(([k, v]) => `<tr><th>${k}</th><td class="mono">${v ?? "-"}</td></tr>`).join("");
+      const rows = (frame.events || []).slice(0, 18).map(ev => {
+        const detail = ev.reason || ev.station_name || ev.winner || (ev.finish_step != null ? `finish ${ev.finish_step}` : "");
+        return `<tr><td class="mono">${ev.agent}</td><td>${ev.event}</td><td>${ev.task_id ?? ""}</td><td>${detail}</td></tr>`;
+      });
+      el.events.innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">no events</td></tr>`;
+    }
+
+    function render() {
+      draw();
+      renderSide();
+    }
+
+    function setViewMode(mode) {
+      state.viewMode = mode;
+      el.mapView.classList.toggle("active", mode === "map");
+      el.globeView.classList.toggle("active", mode === "globe");
+      render();
+    }
+
+    function setPlaying(value) {
+      state.playing = value;
+      el.play.textContent = value ? "Ⅱ" : "▶";
+      if (state.timer) clearInterval(state.timer);
+      if (value) {
+        state.timer = setInterval(() => {
+          if (!state.data) return;
+          state.index = (state.index + 1) % state.data.frames.length;
+          render();
+        }, 450);
+      }
+    }
+
+    async function loadRollout() {
+      try {
+        const response = await fetch(`/runs/${runPath}/eval/rollout.json`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`rollout ${response.status}`);
+        state.data = await response.json();
+        state.index = 0;
+        el.error.style.display = "none";
+        render();
+      } catch (error) {
+        el.error.style.display = "block";
+        el.error.textContent = `Waiting for evaluation rollout: ${error.message}`;
+      }
+    }
+
+    el.play.addEventListener("click", () => setPlaying(!state.playing));
+    el.prev.addEventListener("click", () => {
+      if (!state.data) return;
+      state.index = Math.max(0, state.index - 1);
+      render();
+    });
+    el.next.addEventListener("click", () => {
+      if (!state.data) return;
+      state.index = Math.min(state.data.frames.length - 1, state.index + 1);
+      render();
+    });
+    el.mapView.addEventListener("click", () => setViewMode("map"));
+    el.globeView.addEventListener("click", () => setViewMode("globe"));
+    el.slider.addEventListener("input", () => {
+      state.index = Number(el.slider.value) || 0;
+      render();
+    });
+    window.addEventListener("resize", render);
+    loadRollout();
+    setInterval(loadRollout, 10000);
+  </script>
+</body>
+</html>

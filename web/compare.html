@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MARL Algorithm Comparison</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101419;
+      --panel: #191f26;
+      --panel-2: #202833;
+      --line: #344052;
+      --text: #edf2f7;
+      --muted: #9aa7b6;
+      --dqn: #55c7a0;
+      --ippo: #63b3ed;
+      --mappo: #f2c14e;
+      --qmix: #f07f6f;
+      --bad: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px 22px;
+      background: #151a20;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 { margin: 0; font-size: 19px; letter-spacing: 0; }
+    h2 { margin: 0; font-size: 15px; letter-spacing: 0; }
+    a { color: #cfe9ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .status { color: var(--muted); display: flex; gap: 10px; align-items: center; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #f2c14e; }
+    .dot.running { background: #55c7a0; }
+    .dot.complete { background: #63b3ed; }
+    .dot.failed { background: var(--bad); }
+    main {
+      width: min(1500px, calc(100vw - 30px));
+      margin: 16px auto 30px;
+      display: grid;
+      gap: 16px;
+    }
+    .panel, .algorithm-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .panel { padding: 14px; min-width: 0; }
+    .algorithm-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(210px, 1fr));
+      gap: 12px;
+    }
+    .algorithm-card { padding: 13px; border-top: 3px solid var(--algo-color); }
+    .algorithm-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .algorithm-name { font-weight: 720; font-size: 16px; }
+    .run-state { color: var(--muted); font-size: 12px; }
+    .progress {
+      height: 6px;
+      margin: 12px 0;
+      background: #11171d;
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .progress > i { display: block; height: 100%; width: 0; background: var(--algo-color); }
+    .metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; }
+    .label { color: var(--muted); font-size: 11px; }
+    .value { font-size: 17px; font-weight: 680; overflow-wrap: anywhere; }
+    .card-actions { display: flex; justify-content: space-between; margin-top: 12px; font-size: 12px; }
+    .two-col { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(320px, .8fr); gap: 16px; }
+    .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+    select {
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 0 9px;
+    }
+    canvas { width: 100%; height: 330px; display: block; background: var(--panel-2); border-radius: 6px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+    .tabs button {
+      height: 32px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--muted);
+      background: var(--panel-2);
+      padding: 0 11px;
+      cursor: pointer;
+    }
+    .tabs button.active { color: #101419; background: var(--algo-color); border-color: var(--algo-color); }
+    .scroll { max-height: 330px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    td { overflow-wrap: anywhere; }
+    .parameter-table { table-layout: fixed; }
+    .parameter-table th { width: 44%; }
+    .parameter-table td { word-break: break-word; }
+    .mono { font-family: Consolas, "SFMono-Regular", monospace; }
+    .error { display: none; padding: 10px; color: var(--bad); border: 1px solid var(--bad); border-radius: 6px; }
+    @media (max-width: 1180px) {
+      .algorithm-grid { grid-template-columns: repeat(2, minmax(210px, 1fr)); }
+      .two-col { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      header { align-items: flex-start; flex-direction: column; }
+      main { width: calc(100vw - 20px); }
+      .algorithm-grid { grid-template-columns: 1fr; }
+      canvas { height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MARL Algorithm Comparison</h1>
+    <div class="status"><i id="suiteDot" class="dot"></i><span id="suiteStatus">waiting</span><span id="suiteStage"></span></div>
+  </header>
+  <main>
+    <div id="error" class="error"></div>
+    <section id="algorithmGrid" class="algorithm-grid"></section>
+
+    <section class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Training Curves</h2>
+          <select id="metricSelect" aria-label="Comparison metric">
+            <option value="rolling_mean_reward">Reward (20-episode mean)</option>
+            <option value="mean_reward">Reward (raw episode)</option>
+            <option value="reward_per_opportunity">Reward / Decision Opportunity</option>
+            <option value="decision_opportunity_rate">Decision Opportunity Rate</option>
+            <option value="completed_tasks">Completed Tasks</option>
+            <option value="total_priority_completed">Completed Priority</option>
+            <option value="mean_observation_quality">Image Quality</option>
+            <option value="mean_loss">Loss</option>
+          </select>
+        </div>
+        <canvas id="chart"></canvas>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Selected Parameters</h2></div>
+        <div id="tabs" class="tabs"></div>
+        <div class="scroll"><table class="parameter-table"><tbody id="parameterRows"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Evaluation Results</h2><a href="/web/index.html">Live DQN board</a></div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Algorithm</th><th>Checkpoint</th><th>Reward</th><th>Completed</th><th>Coop</th><th>Priority</th><th>Quality</th><th>Downlinked MB</th><th>Conflicts</th><th>Replay</th></tr></thead>
+          <tbody id="evaluationRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const algorithms = [
+      { id: "ps_dqn", label: "Shared Double DQN", color: "#55c7a0" },
+      { id: "ippo", label: "IPPO", color: "#63b3ed" },
+      { id: "mappo", label: "MAPPO", color: "#f2c14e" },
+      { id: "qmix", label: "QMIX", color: "#f07f6f" }
+    ];
+    const params = new URLSearchParams(window.location.search);
+    const requestedRun = (params.get("run") || "comparison").replace(/[^a-zA-Z0-9_/-]/g, "");
+    const runRoot = requestedRun.includes("..") ? "comparison" : requestedRun.replace(/^\/+/, "");
+    const state = { suite: null, runs: {}, selected: "ps_dqn" };
+    const el = {
+      suiteDot: document.getElementById("suiteDot"),
+      suiteStatus: document.getElementById("suiteStatus"),
+      suiteStage: document.getElementById("suiteStage"),
+      error: document.getElementById("error"),
+      algorithmGrid: document.getElementById("algorithmGrid"),
+      metricSelect: document.getElementById("metricSelect"),
+      chart: document.getElementById("chart"),
+      tabs: document.getElementById("tabs"),
+      parameterRows: document.getElementById("parameterRows"),
+      evaluationRows: document.getElementById("evaluationRows")
+    };
+    const fmt = new Intl.NumberFormat("zh-CN");
+    const hasNumber = value => value !== null && value !== undefined && Number.isFinite(Number(value));
+    const integer = value => hasNumber(value) ? fmt.format(Math.round(Number(value))) : "-";
+    const number = (value, digits = 3) => hasNumber(value) ? Number(value).toFixed(digits) : "-";
+    const rollingMean = (history, key, window = 20) => {
+      const values = history.slice(-window).map(row => Number(row[key])).filter(Number.isFinite);
+      return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    };
+    const benchmarkValue = (evaluation, key, digits = 2) => {
+      const stats = evaluation?.benchmark?.aggregate?.[key];
+      return stats ? `${number(stats.mean, digits)} ± ${number(stats.std, digits)}` : "-";
+    };
+
+    async function loadJson(url) {
+      try {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) return null;
+        return await response.json();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function flattenObject(value, prefix = "") {
+      if (value == null || typeof value !== "object" || Array.isArray(value)) {
+        return [[prefix, Array.isArray(value) ? JSON.stringify(value) : value]];
+      }
+      return Object.entries(value).flatMap(([key, item]) => {
+        const path = prefix ? `${prefix}.${key}` : key;
+        return item != null && typeof item === "object" && !Array.isArray(item)
+          ? flattenObject(item, path)
+          : [[path, Array.isArray(item) ? JSON.stringify(item) : item]];
+      });
+    }
+
+    function renderCards() {
+      el.algorithmGrid.innerHTML = algorithms.map(algorithm => {
+        const run = state.runs[algorithm.id] || {};
+        const metrics = run.metrics || {};
+        const last = metrics.last || {};
+        const evaluation = run.evaluation || {};
+        const target = Number(metrics.args?.episodes || state.suite?.config?.episodes || 0);
+        const progress = target ? Math.min(100, 100 * Number(metrics.episode || 0) / target) : 0;
+        const testSummary = evaluation.final_summary || {};
+        const smoothedReward = rollingMean(metrics.history || [], "mean_reward");
+        return `<article class="algorithm-card" style="--algo-color:${algorithm.color}">
+          <div class="algorithm-head"><span class="algorithm-name">${algorithm.label}</span><span class="run-state">${metrics.status || "pending"}</span></div>
+          <div class="progress"><i style="width:${progress}%"></i></div>
+          <div class="metrics">
+            <div><div class="label">Episode</div><div class="value">${integer(metrics.episode)}/${integer(target)}</div></div>
+            <div><div class="label">Reward MA20</div><div class="value">${number(smoothedReward)}</div></div>
+            <div><div class="label">Train Completed</div><div class="value">${integer(last.completed_tasks)}</div></div>
+            <div><div class="label">Loss</div><div class="value">${number(last.mean_loss, 4)}</div></div>
+            <div><div class="label">Decision Rate</div><div class="value">${hasNumber(last.decision_opportunity_rate) ? `${number(100 * Number(last.decision_opportunity_rate), 1)}%` : "-"}</div></div>
+            <div><div class="label">Test Reward</div><div class="value">${benchmarkValue(evaluation, "mean_episode_reward", 3)}</div></div>
+            <div><div class="label">Test Completed</div><div class="value">${benchmarkValue(evaluation, "completed_tasks", 1)}</div></div>
+          </div>
+          <div class="card-actions"><span>${metrics.device || "-"} · ${integer(last.agent_steps_per_second)} agent/s</span><a href="/web/eval.html?run=${runRoot}/${algorithm.id}">Open replay</a></div>
+        </article>`;
+      }).join("");
+    }
+
+    function renderTabs() {
+      el.tabs.innerHTML = algorithms.map(algorithm =>
+        `<button type="button" data-algorithm="${algorithm.id}" class="${state.selected === algorithm.id ? "active" : ""}" style="--algo-color:${algorithm.color}">${algorithm.label}</button>`
+      ).join("");
+      el.tabs.querySelectorAll("button").forEach(button => {
+        button.addEventListener("click", () => {
+          state.selected = button.dataset.algorithm;
+          renderTabs();
+          renderParameters();
+        });
+      });
+    }
+
+    function renderParameters() {
+      const metrics = state.runs[state.selected]?.metrics || {};
+      const rows = [
+        ...flattenObject(metrics.algorithm || {}, "algorithm"),
+        ...flattenObject(metrics.args || {}, "launch"),
+        ...flattenObject(metrics.env_config || {}, "environment")
+      ];
+      el.parameterRows.innerHTML = rows.map(([key, value]) =>
+        `<tr><th>${key}</th><td class="mono">${value ?? "-"}</td></tr>`
+      ).join("") || `<tr><td>Waiting for run parameters</td></tr>`;
+    }
+
+    function renderEvaluations() {
+      el.evaluationRows.innerHTML = algorithms.map(algorithm => {
+        const evaluation = state.runs[algorithm.id]?.evaluation || {};
+        const summary = evaluation.final_summary || {};
+        return `<tr><td>${algorithm.label}<br><span class="mono">${integer(evaluation.eval_episodes)} tests</span></td><td>${integer(evaluation.checkpoint_episode)}</td><td>${benchmarkValue(evaluation, "mean_episode_reward", 3)}</td><td>${benchmarkValue(evaluation, "completed_tasks", 1)}</td><td>${benchmarkValue(evaluation, "cooperative_completed_tasks", 1)}</td><td>${benchmarkValue(evaluation, "total_priority_completed", 1)}</td><td>${benchmarkValue(evaluation, "mean_observation_quality", 3)}</td><td>${benchmarkValue(evaluation, "downlinked_data_mb", 1)}</td><td>${benchmarkValue(evaluation, "total_conflicts", 1)}</td><td><a href="/web/eval.html?run=${runRoot}/${algorithm.id}">Map / Globe</a></td></tr>`;
+      }).join("");
+    }
+
+    function drawChart() {
+      const canvas = el.chart;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(600, Math.floor(rect.width * dpr));
+      canvas.height = Math.floor(rect.height * dpr);
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const w = rect.width, h = rect.height;
+      ctx.fillStyle = "#202833";
+      ctx.fillRect(0, 0, w, h);
+      const pad = { left: 52, right: 18, top: 18, bottom: 34 };
+      const plotW = w - pad.left - pad.right, plotH = h - pad.top - pad.bottom;
+      ctx.strokeStyle = "#344052";
+      for (let row = 0; row <= 5; row++) {
+        const y = pad.top + row * plotH / 5;
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+      }
+      const metric = el.metricSelect.value;
+      const histories = algorithms.map(algorithm => {
+        const source = state.runs[algorithm.id]?.metrics?.history || [];
+        const history = source.map((record, index) => {
+          const value = metric === "rolling_mean_reward"
+            ? rollingMean(source.slice(0, index + 1), "mean_reward")
+            : Number(record[metric]);
+          return { episode: record.episode, value };
+        });
+        return { algorithm, history };
+      });
+      const values = histories.flatMap(item => item.history.map(record => Number(record.value)).filter(Number.isFinite));
+      if (!values.length) return;
+      let minY = Math.min(...values), maxY = Math.max(...values);
+      if (minY === maxY) { minY -= 1; maxY += 1; }
+      const maxEpisode = Math.max(1, ...histories.flatMap(item => item.history.map(record => Number(record.episode) || 0)));
+      const xAt = episode => pad.left + (Number(episode) || 0) / maxEpisode * plotW;
+      const yAt = value => pad.top + plotH - (Number(value) - minY) / (maxY - minY) * plotH;
+      ctx.font = "12px system-ui";
+      ctx.fillStyle = "#9aa7b6";
+      ctx.fillText(number(maxY, 2), 6, pad.top + 4);
+      ctx.fillText(number(minY, 2), 6, pad.top + plotH);
+      histories.forEach(({ algorithm, history }) => {
+        const points = history.filter(record => Number.isFinite(Number(record.value)));
+        if (!points.length) return;
+        ctx.strokeStyle = algorithm.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        points.forEach((record, index) => {
+          const x = xAt(record.episode), y = yAt(record.value);
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+      let legendX = pad.left;
+      algorithms.forEach(algorithm => {
+        ctx.fillStyle = algorithm.color; ctx.fillRect(legendX, h - 20, 10, 10);
+        ctx.fillStyle = "#dce7f2"; ctx.fillText(algorithm.label, legendX + 14, h - 11);
+        legendX += 125;
+      });
+    }
+
+    async function refresh() {
+      const suite = await loadJson(`/runs/${runRoot}/suite.json`);
+      const payloads = await Promise.all(algorithms.map(async algorithm => ({
+        id: algorithm.id,
+        metrics: await loadJson(`/runs/${runRoot}/${algorithm.id}/metrics.json`),
+        evaluation: await loadJson(`/runs/${runRoot}/${algorithm.id}/eval/summary.json`)
+      })));
+      state.suite = suite;
+      payloads.forEach(payload => { state.runs[payload.id] = payload; });
+      const status = suite?.status || "waiting";
+      el.suiteStatus.textContent = status;
+      el.suiteStage.textContent = suite?.current_algorithm ? `${suite.current_algorithm} · ${suite.stage}` : "";
+      el.suiteDot.className = `dot ${status}`;
+      el.error.style.display = suite?.error ? "block" : "none";
+      el.error.textContent = suite?.error || "";
+      renderCards();
+      renderTabs();
+      renderParameters();
+      renderEvaluations();
+      drawChart();
+    }
+
+    el.metricSelect.addEventListener("change", drawChart);
+    window.addEventListener("resize", drawChart);
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

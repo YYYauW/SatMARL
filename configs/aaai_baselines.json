@@ -1,0 +1,29 @@
+{
+  "evaluation_principle": "All methods use identical held-out global-random seeds, constraints, task counts, and horizons.",
+  "non_learning": [
+    {"id": "random_feasible", "role": "sanity lower bound", "implemented": true},
+    {"id": "greedy_priority", "role": "domain myopic heuristic", "implemented": true},
+    {"id": "earliest_deadline", "role": "classical dispatch heuristic", "implemented": true},
+    {"id": "rolling_assignment", "role": "Hungarian rolling assignment", "implemented": true},
+    {"id": "cp_sat_or_milp", "role": "small-instance upper bound and optimality gap", "implemented": false}
+  ],
+  "learning": [
+    {"id": "ps_dqn", "role": "parameter-shared value baseline", "implemented": true},
+    {"id": "ippo", "role": "independent policy-gradient baseline", "implemented": true},
+    {"id": "mappo", "role": "fixed-step CTDE baseline", "implemented": true},
+    {"id": "qmix", "role": "value-decomposition baseline", "implemented": true}
+  ],
+  "ablations": [
+    {"id": "oasis_event_only", "description": "duration-corrected opportunity GAE only"},
+    {"id": "oasis_curriculum_only", "description": "adaptive opportunity curriculum only"},
+    {"id": "oasis_unbalanced", "description": "full method without opportunity balancing"},
+    {"id": "oasis_full", "description": "all proposed components"}
+  ],
+  "external_reference": [
+    {
+      "name": "MARL for Sequential Satellite Assignment Problems",
+      "venue": "AAAI-25 PRS",
+      "comparison": "Reimplement or compare under a clearly matched sequential-assignment subset; do not compare incompatible reported numbers."
+    }
+  ]
+}
