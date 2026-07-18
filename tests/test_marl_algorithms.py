@@ -16,11 +16,13 @@ for path in (SRC, SCRIPTS):
 
 from marl_common import (
     ActorCritic,
+    FastSlowOpportunityGraphActorCritic,
     OpportunityGraphActorCritic,
     QMixer,
     flatten_local_all,
     flatten_opportunity_graph_all,
     opportunity_graph_features,
+    slow_strategy_features,
 )
 from sat_marl_env import EnvConfig, SatTaskingEnv
 
@@ -116,6 +118,39 @@ class MarlAlgorithmTest(unittest.TestCase):
         self.assertGreater(float(messages[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(messages[0, 0, 1]), float(messages[1, 0, 1]))
         self.assertEqual(float(messages[0, 1].sum()), 0.0)
+
+    def test_fast_slow_graph_has_fixed_width_and_valid_logits(self) -> None:
+        widths = []
+        for satellites in (4, 8):
+            env = SatTaskingEnv(
+                EnvConfig(
+                    num_satellites=satellites,
+                    num_tasks=64,
+                    num_planes=2,
+                    max_steps=8,
+                    candidate_k=6,
+                    neighbor_k=2,
+                    task_layout="mixed",
+                    curriculum_visible_fraction=1.0,
+                )
+            )
+            observations, _ = env.reset(seed=29)
+            _, graph_obs, global_state, masks = flatten_opportunity_graph_all(
+                observations
+            )
+            slow_obs = slow_strategy_features(graph_obs, 6, 2)
+            actor_obs = np.concatenate([graph_obs, slow_obs], axis=1)
+            widths.append(actor_obs.shape[1])
+            model = FastSlowOpportunityGraphActorCritic(
+                critic_dim=actor_obs.shape[1] + len(global_state),
+                candidate_k=6,
+                neighbor_k=2,
+                hidden_dim=32,
+                intent_dim=16,
+            )
+            logits = model.policy_logits(torch.as_tensor(actor_obs))
+            self.assertEqual(tuple(logits.shape), (satellites, masks.shape[1]))
+        self.assertEqual(widths[0], widths[1])
 
 
 if __name__ == "__main__":

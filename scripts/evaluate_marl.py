@@ -21,10 +21,12 @@ from evaluate_policy import collect_events, collect_frame, config_from_checkpoin
 from marl_common import (
     ActorCritic,
     AgentQNetwork,
+    FastSlowOpportunityGraphActorCritic,
     OpportunityGraphActorCritic,
     flatten_local_all,
     flatten_opportunity_graph_all,
     resolve_device,
+    slow_strategy_features,
 )
 from sat_marl_env import SatTaskingEnv
 from train_dqn import QNetwork, flatten_all
@@ -84,32 +86,61 @@ def build_policy(
         return algo, choose
 
     agents, local, global_state, masks = flatten_local_all(observations)
-    if algo == "oasis_graph":
+    if algo in {"oasis_graph", "oasis_fast_slow_graph"}:
         graph_agents, graph_local, graph_global, graph_masks = (
             flatten_opportunity_graph_all(observations)
         )
         candidate_k = int(train_args.get("candidate_k", graph_masks.shape[1] - 2))
         neighbor_k = int(train_args.get("neighbor_k", 6))
-        model = OpportunityGraphActorCritic(
-            critic_dim=graph_local.shape[1] + len(graph_global),
-            candidate_k=candidate_k,
-            neighbor_k=neighbor_k,
-            hidden_dim=int(train_args.get("hidden_dim", 256)),
-            activation=str(train_args.get("activation", "relu")),
-            layer_norm=bool(train_args.get("layer_norm", True)),
-        ).to(device)
+        fast_slow = algo == "oasis_fast_slow_graph"
+        if fast_slow:
+            initial_slow = slow_strategy_features(
+                graph_local, candidate_k, neighbor_k
+            )
+            critic_dim = graph_local.shape[1] + initial_slow.shape[1] + len(graph_global)
+            model = FastSlowOpportunityGraphActorCritic(
+                critic_dim=critic_dim,
+                candidate_k=candidate_k,
+                neighbor_k=neighbor_k,
+                hidden_dim=int(train_args.get("hidden_dim", 256)),
+                intent_dim=int(train_args.get("slow_intent_dim", 64)),
+                activation=str(train_args.get("activation", "relu")),
+                layer_norm=bool(train_args.get("layer_norm", True)),
+            ).to(device)
+        else:
+            model = OpportunityGraphActorCritic(
+                critic_dim=graph_local.shape[1] + len(graph_global),
+                candidate_k=candidate_k,
+                neighbor_k=neighbor_k,
+                hidden_dim=int(train_args.get("hidden_dim", 256)),
+                activation=str(train_args.get("activation", "relu")),
+                layer_norm=bool(train_args.get("layer_norm", True)),
+            ).to(device)
         model.load_state_dict(checkpoint["model"])
         model.eval()
         factor_messages = bool(train_args.get("graph_factor_messages", True))
         learned_resource_bids = bool(train_args.get("learned_resource_bids", True))
+        slow_interval = max(1, int(train_args.get("slow_interval", 8)))
+        slow_snapshot: np.ndarray | None = None
+        policy_step = 0
 
         def choose_graph(current: dict) -> dict[str, int | dict[str, float | int]]:
+            nonlocal slow_snapshot, policy_step
             current_agents, current_local, _, current_masks = (
                 flatten_opportunity_graph_all(current)
             )
             if not factor_messages:
                 current_local = current_local.copy()
                 current_local[:, -candidate_k * 4 :] = 0.0
+            if fast_slow:
+                if slow_snapshot is None or policy_step % slow_interval == 0:
+                    slow_snapshot = slow_strategy_features(
+                        current_local, candidate_k, neighbor_k
+                    )
+                current_local = np.concatenate(
+                    [current_local, slow_snapshot], axis=1
+                )
+            policy_step += 1
             with torch.no_grad():
                 logits = model.policy_logits(
                     torch.as_tensor(
@@ -126,6 +157,13 @@ def build_policy(
                 )
                 for row, agent in enumerate(current_agents)
             }
+
+        def reset_strategy() -> None:
+            nonlocal slow_snapshot, policy_step
+            slow_snapshot = None
+            policy_step = 0
+
+        choose_graph.reset_strategy = reset_strategy  # type: ignore[attr-defined]
 
         return algo, choose_graph
 
@@ -289,6 +327,9 @@ def main() -> None:
             algo, choose_actions = build_policy(
                 checkpoint, metrics, observations, device
             )
+        reset_strategy = getattr(choose_actions, "reset_strategy", None)
+        if callable(reset_strategy):
+            reset_strategy()
         capture_representative = episode_index == 0
         capture_frames = capture_representative and args.capture_frames
         frames = [collect_frame(env)] if capture_frames else []

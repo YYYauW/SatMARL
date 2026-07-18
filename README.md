@@ -1,9 +1,14 @@
-# SatMARL / OASIS-Graph
+# SatMARL / Fast–Slow OASIS-Graph
 
 OASIS-Graph is a constraint-rich multi-agent reinforcement learning project for
 large-scale Earth-observation satellite scheduling. It models sparse,
 satellite-specific decision opportunities as a semi-Markov process and uses a
 size-invariant satellite--task opportunity graph for learned coordination.
+
+The current method adds a bi-timescale hierarchy: a slow strategic encoder
+refreshes a persistent constellation-local intent every K physical steps, and
+the fast opportunity policy uses that intent for asynchronous observation,
+downlink, cooperation, and contention decisions.
 
 The current research protocol trains on 64 satellites and 3,072 tasks, then
 evaluates the same graph policy without architectural changes on 128 and 256
@@ -20,6 +25,7 @@ The implementation combines:
 - a sparse bipartite satellite--task opportunity graph;
 - a shared, permutation-equivariant candidate scorer;
 - policy logits reused as learned resource-contention bids;
+- persistent slow strategic intent plus fast opportunity-level execution;
 - centralized training with decentralized execution;
 - exact action masks plus execution-time constraint revalidation.
 
@@ -87,6 +93,19 @@ python scripts/train_oasis.py \
   --run-dir runs/oasis_graph_aaai/graph --device cuda
 ```
 
+Train the fast--slow policy directly:
+
+```bash
+python scripts/train_oasis.py \
+  --architecture fast_slow_graph --slow-interval 8 --slow-intent-dim 64 \
+  --satellites 64 --tasks 3072 --planes 8 \
+  --max-steps 240 --episodes 300 \
+  --point-observation-seconds 5 --fov-deg 45 \
+  --semantic-opportunity-balancing \
+  --run-dir runs/fast_slow_aaai/training/fast_slow_full/seed_701 \
+  --device cuda
+```
+
 Evaluate a checkpoint and export a standard schedule:
 
 ```bash
@@ -103,6 +122,15 @@ times, quality, reward, energy, compressed data, observers, stations, downlink,
 winner, and rejection reason.
 
 ## Reproducible paper pipeline
+
+For a server-ready, multi-seed fast--slow paper pipeline:
+
+```bash
+python scripts/run_fast_slow_server_pipeline.py --profile paper --device cuda
+```
+
+See `docs/server_fast_slow_training.md` for conda, tmux, resume, GPU, SSH
+tunnel, fair RL baseline, and artifact instructions.
 
 The complete development pipeline runs tests, waits for the five-baseline
 reference suite, trains the 64-satellite graph method and ablations, evaluates
@@ -131,6 +159,7 @@ python scripts/serve_dashboard.py --port 8766
 Open:
 
 - OASIS-Graph paper pipeline: `http://127.0.0.1:8766/web/oasis_graph.html`
+- Fast--Slow training curves: `http://127.0.0.1:8766/web/fast_slow.html`
 - OASIS training board: `http://127.0.0.1:8766/web/oasis.html`
 - baseline comparison: `http://127.0.0.1:8766/web/compare.html`
 - representative schedule/orbit replay: `http://127.0.0.1:8766/web/eval.html`

@@ -172,6 +172,134 @@ class OpportunityGraphActorCritic(nn.Module):
         return self.critic(critic_obs).squeeze(-1)
 
 
+class FastSlowOpportunityGraphActorCritic(nn.Module):
+    """Bi-timescale opportunity-graph actor with a persistent strategic intent.
+
+    The slow encoder consumes a constellation-local snapshot that is refreshed
+    every ``slow_interval`` environment steps.  Its latent intent conditions a
+    fast, permutation-equivariant satellite--task scorer at every controllable
+    opportunity.  Parameters remain independent of constellation size.
+    """
+
+    def __init__(
+        self,
+        critic_dim: int,
+        candidate_k: int,
+        neighbor_k: int,
+        hidden_dim: int = 256,
+        intent_dim: int = 64,
+        activation: str = "relu",
+        layer_norm: bool = True,
+        self_dim: int = 24,
+        task_dim: int = 24,
+        neighbor_dim: int = 13,
+        neighbor_action_dim: int = 4,
+        factor_dim: int = 4,
+    ):
+        super().__init__()
+        self.candidate_k = candidate_k
+        self.task_dim = task_dim
+        self.factor_dim = factor_dim
+        self.context_dim = self_dim + neighbor_k * neighbor_dim + neighbor_action_dim
+        self.graph_actor_dim = self.context_dim + candidate_k * (task_dim + factor_dim)
+        # Slow features contain context plus mean/max pooled task-edge features.
+        self.slow_feature_dim = self.context_dim + 2 * (task_dim + factor_dim)
+        self.actor_dim = self.graph_actor_dim + self.slow_feature_dim
+        self.context_encoder = make_mlp(
+            self.context_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+        )
+        self.candidate_encoder = make_mlp(
+            task_dim + factor_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+        )
+        self.slow_encoder = make_mlp(
+            self.slow_feature_dim, intent_dim, hidden_dim, 2, activation, layer_norm
+        )
+        activation_class = {"relu": nn.ReLU, "silu": nn.SiLU, "tanh": nn.Tanh}[
+            activation
+        ]
+        self.resource_head = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + intent_dim, hidden_dim),
+            activation_class(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.wait_downlink_head = nn.Sequential(
+            nn.Linear(hidden_dim + intent_dim, hidden_dim),
+            activation_class(),
+            nn.Linear(hidden_dim, 2),
+        )
+        self.critic = make_mlp(
+            critic_dim, 1, hidden_dim, 2, activation, layer_norm
+        )
+
+    def policy_logits(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        if actor_obs.shape[-1] != self.actor_dim:
+            raise ValueError(
+                f"Expected fast-slow actor width {self.actor_dim}, got {actor_obs.shape[-1]}"
+            )
+        graph_obs = actor_obs[..., : self.graph_actor_dim]
+        slow_features = actor_obs[..., self.graph_actor_dim :]
+        context = graph_obs[..., : self.context_dim]
+        candidate_stop = self.context_dim + self.candidate_k * self.task_dim
+        candidates = graph_obs[..., self.context_dim : candidate_stop].reshape(
+            -1, self.candidate_k, self.task_dim
+        )
+        factors = graph_obs[..., candidate_stop:].reshape(
+            -1, self.candidate_k, self.factor_dim
+        )
+        context_hidden = self.context_encoder(context)
+        candidate_hidden = self.candidate_encoder(
+            torch.cat([candidates, factors], dim=-1)
+        )
+        intent = self.slow_encoder(slow_features)
+        repeated_context = context_hidden.unsqueeze(1).expand(
+            -1, self.candidate_k, -1
+        )
+        repeated_intent = intent.unsqueeze(1).expand(-1, self.candidate_k, -1)
+        task_logits = self.resource_head(
+            torch.cat([repeated_context, candidate_hidden, repeated_intent], dim=-1)
+        ).squeeze(-1)
+        wait_downlink = self.wait_downlink_head(
+            torch.cat([context_hidden, intent], dim=-1)
+        )
+        return torch.cat([wait_downlink, task_logits], dim=-1)
+
+    def values(self, critic_obs: torch.Tensor) -> torch.Tensor:
+        return self.critic(critic_obs).squeeze(-1)
+
+
+def slow_strategy_features(
+    graph_actor_obs: np.ndarray,
+    candidate_k: int,
+    neighbor_k: int,
+    self_dim: int = 24,
+    task_dim: int = 24,
+    neighbor_dim: int = 13,
+    neighbor_action_dim: int = 4,
+    factor_dim: int = 4,
+) -> np.ndarray:
+    """Compress a graph snapshot into fixed-width slow strategic features."""
+
+    observations = np.asarray(graph_actor_obs, dtype=np.float32)
+    context_dim = self_dim + neighbor_k * neighbor_dim + neighbor_action_dim
+    candidate_stop = context_dim + candidate_k * task_dim
+    expected = candidate_stop + candidate_k * factor_dim
+    if observations.ndim != 2 or observations.shape[1] != expected:
+        raise ValueError(
+            f"Expected graph observations [agents, {expected}], got {observations.shape}"
+        )
+    context = observations[:, :context_dim]
+    candidates = observations[:, context_dim:candidate_stop].reshape(
+        -1, candidate_k, task_dim
+    )
+    factors = observations[:, candidate_stop:].reshape(-1, candidate_k, factor_dim)
+    edges = np.concatenate([candidates, factors], axis=-1)
+    pooled_mean = np.mean(edges, axis=1)
+    pooled_max = np.max(edges, axis=1)
+    return np.concatenate([context, pooled_mean, pooled_max], axis=1).astype(
+        np.float32, copy=False
+    )
+
+
 class AgentQNetwork(nn.Module):
     def __init__(
         self,

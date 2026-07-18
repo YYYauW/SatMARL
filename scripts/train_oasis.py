@@ -21,6 +21,7 @@ if str(SRC) not in sys.path:
 
 from marl_common import (
     ActorCritic,
+    FastSlowOpportunityGraphActorCritic,
     OpportunityGraphActorCritic,
     atomic_torch_save,
     atomic_write_json,
@@ -32,6 +33,7 @@ from marl_common import (
     resolve_device,
     scenario_seed,
     serialize_args,
+    slow_strategy_features,
 )
 from oasis_common import (
     OpportunityCurriculum,
@@ -81,7 +83,13 @@ def algorithm_metadata(
 ) -> dict[str, Any]:
     centralized = True
     return {
-        "name": "oasis_graph" if args.architecture == "opportunity_graph" else "oasis_mappo",
+        "name": (
+            "oasis_fast_slow_graph"
+            if args.architecture == "fast_slow_graph"
+            else "oasis_graph"
+            if args.architecture == "opportunity_graph"
+            else "oasis_mappo"
+        ),
         "family": "opportunity_aware_asynchronous_marl",
         "training_mode": "centralized_critic_decentralized_actor",
         "execution_mode": "decentralized_local_observation",
@@ -90,21 +98,32 @@ def algorithm_metadata(
         "action_masking": True,
         "coordination": (
             "learned_task_factor_bids_plus_hard_feasibility"
-            if args.architecture == "opportunity_graph" and args.learned_resource_bids
+            if args.architecture in {"opportunity_graph", "fast_slow_graph"}
+            and args.learned_resource_bids
             else "task_factor_policy_plus_environment_tiebreak"
-            if args.architecture == "opportunity_graph"
+            if args.architecture in {"opportunity_graph", "fast_slow_graph"}
             else "environment_auction_and_hard_feasibility"
         ),
         "architecture": args.architecture,
         "learned_resource_bids": (
-            args.architecture == "opportunity_graph" and args.learned_resource_bids
+            args.architecture in {"opportunity_graph", "fast_slow_graph"}
+            and args.learned_resource_bids
         ),
         "opportunity_graph": {
             "factor_nodes": "tasks",
             "edge_message_dim": 4,
             "factor_messages": args.graph_factor_messages,
             "complexity": "O(active_satellites * candidate_k)",
-            "size_invariant_parameters": args.architecture == "opportunity_graph",
+            "size_invariant_parameters": args.architecture
+            in {"opportunity_graph", "fast_slow_graph"},
+        },
+        "temporal_hierarchy": {
+            "enabled": args.architecture == "fast_slow_graph",
+            "slow_interval_steps": args.slow_interval,
+            "slow_interval_seconds": args.slow_interval * args.step_duration_seconds,
+            "intent_dim": args.slow_intent_dim,
+            "slow_input": "persistent_resource_and_task_factor_snapshot",
+            "fast_policy": "opportunity_conditioned_task_and_downlink_decisions",
         },
         "credit_assignment": "duration_corrected_opportunity_gae",
         "policy_samples": "balanced_decision_opportunities_only",
@@ -367,9 +386,9 @@ def main() -> None:
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument(
         "--architecture",
-        choices=["mlp", "opportunity_graph"],
+        choices=["mlp", "opportunity_graph", "fast_slow_graph"],
         default="mlp",
-        help="Use a size-invariant shared task-factor scorer for sparse opportunity graphs.",
+        help="Choose MLP, graph, or bi-timescale graph actor.",
     )
     parser.add_argument(
         "--graph-factor-messages",
@@ -383,6 +402,13 @@ def main() -> None:
         default=True,
         help="Ablation switch for using policy logits as conflict-resolution bids.",
     )
+    parser.add_argument(
+        "--slow-interval",
+        type=int,
+        default=8,
+        help="Refresh strategic intent every K environment steps for fast_slow_graph.",
+    )
+    parser.add_argument("--slow-intent-dim", type=int, default=64)
     parser.add_argument("--hidden-layers", type=int, default=2)
     parser.add_argument("--activation", choices=["relu", "silu", "tanh"], default="relu")
     parser.add_argument("--layer-norm", action=argparse.BooleanOptionalAction, default=True)
@@ -427,6 +453,10 @@ def main() -> None:
     parser.add_argument("--stop-file", type=Path, default=None)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
+    if args.slow_interval < 1:
+        parser.error("--slow-interval must be at least 1")
+    if args.slow_intent_dim < 1:
+        parser.error("--slow-intent-dim must be at least 1")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -443,12 +473,13 @@ def main() -> None:
         feedback_gain=args.curriculum_feedback_gain,
     )
     observations, _ = env.reset(seed=args.seed)
-    graph_actor = args.architecture == "opportunity_graph"
+    graph_actor = args.architecture in {"opportunity_graph", "fast_slow_graph"}
+    fast_slow_actor = args.architecture == "fast_slow_graph"
     flatten_actor = (
         flatten_opportunity_graph_all if graph_actor else flatten_local_all
     )
 
-    def actor_observations(current_observations):
+    def base_actor_observations(current_observations):
         flattened = flatten_actor(current_observations)
         if graph_actor and not args.graph_factor_messages:
             agents, local_obs, global_state, masks = flattened
@@ -457,11 +488,30 @@ def main() -> None:
             return agents, local_obs, global_state, masks
         return flattened
 
-    _, local_sample, global_sample, masks_sample = actor_observations(observations)
+    agents_sample, graph_sample, global_sample, masks_sample = base_actor_observations(
+        observations
+    )
+    if fast_slow_actor:
+        slow_sample = slow_strategy_features(
+            graph_sample, env.config.candidate_k, env.config.neighbor_k
+        )
+        local_sample = np.concatenate([graph_sample, slow_sample], axis=1)
+    else:
+        local_sample = graph_sample
     actor_dim = local_sample.shape[1]
     critic_dim = actor_dim + len(global_sample) if centralized else actor_dim
     action_dim = masks_sample.shape[1]
-    if graph_actor:
+    if fast_slow_actor:
+        model = FastSlowOpportunityGraphActorCritic(
+            critic_dim=critic_dim,
+            candidate_k=env.config.candidate_k,
+            neighbor_k=env.config.neighbor_k,
+            hidden_dim=args.hidden_dim,
+            intent_dim=args.slow_intent_dim,
+            activation=args.activation,
+            layer_norm=args.layer_norm,
+        ).to(device)
+    elif graph_actor:
         model = OpportunityGraphActorCritic(
             critic_dim=critic_dim,
             candidate_k=env.config.candidate_k,
@@ -480,7 +530,13 @@ def main() -> None:
             args.activation,
             args.layer_norm,
         ).to(device)
-    algorithm_id = "oasis_graph" if graph_actor else "oasis"
+    algorithm_id = (
+        "oasis_fast_slow_graph"
+        if fast_slow_actor
+        else "oasis_graph"
+        if graph_actor
+        else "oasis"
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
@@ -585,9 +641,22 @@ def main() -> None:
             reward_rows: list[np.ndarray] = []
             done_rows: list[np.ndarray] = []
             raw_episode_reward = 0.0
+            slow_snapshot: np.ndarray | None = None
+            slow_refreshes = 0
 
-            for _ in range(args.max_steps):
-                agents, local_obs, global_state, masks = actor_observations(observations)
+            for step_index in range(args.max_steps):
+                agents, graph_obs, global_state, masks = base_actor_observations(
+                    observations
+                )
+                if fast_slow_actor:
+                    if slow_snapshot is None or step_index % args.slow_interval == 0:
+                        slow_snapshot = slow_strategy_features(
+                            graph_obs, env.config.candidate_k, env.config.neighbor_k
+                        )
+                        slow_refreshes += 1
+                    local_obs = np.concatenate([graph_obs, slow_snapshot], axis=1)
+                else:
+                    local_obs = graph_obs
                 critic_obs = critic_observations(
                     local_obs, global_state, centralized
                 )
@@ -758,6 +827,8 @@ def main() -> None:
                 "buffered_episodes": len(pending_rollouts),
                 "decision_opportunity_rate": summary["decision_opportunity_rate"],
                 "active_agents_mean": float(np.mean(np.sum(opportunities, axis=1))),
+                "slow_strategy_refreshes": slow_refreshes,
+                "slow_interval_steps": args.slow_interval if fast_slow_actor else 0,
                 "mean_decision_interval": float(
                     np.mean(durations[durations > 0])
                 )
