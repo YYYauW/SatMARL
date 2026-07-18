@@ -354,6 +354,37 @@ def save_checkpoint(
     )
 
 
+def write_tensorboard_scalars(writer: Any, record: dict[str, Any], episode: int) -> None:
+    """Mirror the compact JSON record into stable TensorBoard tag groups."""
+    tags = {
+        "train/mean_reward": "mean_reward",
+        "train/reward_per_opportunity": "reward_per_opportunity",
+        "loss/total": "loss",
+        "loss/policy": "policy_loss",
+        "loss/value": "value_loss",
+        "loss/entropy": "entropy",
+        "loss/approx_kl": "approx_kl",
+        "loss/clip_fraction": "clip_fraction",
+        "opportunities/decision_rate": "decision_opportunity_rate",
+        "opportunities/task_rate": "task_decision_opportunity_rate",
+        "opportunities/decision_samples": "episode_decision_samples",
+        "tasks/completed": "completed_tasks",
+        "tasks/cooperative_completed": "cooperative_completed_tasks",
+        "tasks/priority_completed": "total_priority_completed",
+        "constraints/conflicts": "conflicts",
+        "constraints/ground_conflicts": "ground_conflicts",
+        "constraints/invalid_actions": "invalid_actions",
+        "constraints/window_misses": "window_misses",
+        "constraints/avoidable_idle_actions": "avoidable_idle_actions",
+        "curriculum/visible_fraction": "curriculum_visible_fraction",
+        "throughput/agent_steps_per_second": "agent_steps_per_second",
+    }
+    for tag, key in tags.items():
+        value = record.get(key)
+        if value is not None and np.isfinite(float(value)):
+            writer.add_scalar(tag, float(value), episode)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--satellites", type=int, default=64)
@@ -451,6 +482,18 @@ def main() -> None:
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--stop-file", type=Path, default=None)
+    parser.add_argument(
+        "--tensorboard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write TensorBoard events alongside metrics.json (enabled by the server pipeline).",
+    )
+    parser.add_argument(
+        "--tensorboard-dir",
+        type=Path,
+        default=None,
+        help="TensorBoard event directory (default: RUN_DIR/tensorboard).",
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
     if args.slow_interval < 1:
@@ -609,6 +652,22 @@ def main() -> None:
                 "resumed_at": time.time(),
             }
         )
+
+    writer: Any | None = None
+    tensorboard_dir = args.tensorboard_dir or args.run_dir / "tensorboard"
+    if args.tensorboard:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError as exc:
+            raise RuntimeError(
+                "TensorBoard is enabled but unavailable. Install with "
+                "`python -m pip install -e '.[monitoring]'`, or pass --no-tensorboard."
+            ) from exc
+        writer = SummaryWriter(
+            log_dir=str(tensorboard_dir),
+            purge_step=start_episode if args.resume else None,
+        )
+        metrics["tensorboard_log_dir"] = str(tensorboard_dir)
 
     atomic_write_json(metrics_path, metrics)
     try:
@@ -867,6 +926,8 @@ def main() -> None:
                 "timestamp": time.time(),
             }
             history.append(record)
+            if writer is not None:
+                write_tensorboard_scalars(writer, record, episode)
             metrics.update(
                 {
                     "status": "running",
@@ -880,6 +941,8 @@ def main() -> None:
             )
             if episode % args.metrics_every == 0:
                 atomic_write_json(metrics_path, metrics)
+                if writer is not None:
+                    writer.flush()
             if episode % args.checkpoint_every == 0:
                 save_checkpoint(checkpoint_path, model, optimizer, metrics, algorithm_id)
 
@@ -899,6 +962,10 @@ def main() -> None:
         )
         atomic_write_json(metrics_path, metrics)
         raise
+    finally:
+        if writer is not None:
+            writer.flush()
+            writer.close()
 
 
 if __name__ == "__main__":

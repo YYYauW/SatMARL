@@ -102,6 +102,7 @@ python scripts/train_oasis.py \
   --max-steps 240 --episodes 300 \
   --point-observation-seconds 5 --fov-deg 45 \
   --semantic-opportunity-balancing \
+  --tensorboard \
   --run-dir runs/fast_slow_aaai/training/fast_slow_full/seed_701 \
   --device cuda
 ```
@@ -132,6 +133,13 @@ python scripts/run_fast_slow_server_pipeline.py --profile paper --device cuda
 See `docs/server_fast_slow_training.md` for conda, tmux, resume, GPU, SSH
 tunnel, fair RL baseline, and artifact instructions.
 
+Install monitoring support and launch the JSON dashboard plus TensorBoard:
+
+```bash
+python -m pip install -e ".[monitoring]"
+bash scripts/start_monitoring.sh
+```
+
 The complete development pipeline runs tests, waits for the five-baseline
 reference suite, trains the 64-satellite graph method and ablations, evaluates
 64/128/256-satellite transfer, and generates CSV, HTML, and LaTeX artifacts:
@@ -160,6 +168,7 @@ Open:
 
 - OASIS-Graph paper pipeline: `http://127.0.0.1:8766/web/oasis_graph.html`
 - Fast--Slow training curves: `http://127.0.0.1:8766/web/fast_slow.html`
+- TensorBoard scalar explorer: `http://127.0.0.1:6006`
 - OASIS training board: `http://127.0.0.1:8766/web/oasis.html`
 - baseline comparison: `http://127.0.0.1:8766/web/compare.html`
 - representative schedule/orbit replay: `http://127.0.0.1:8766/web/eval.html`
@@ -167,7 +176,7 @@ Open:
 For a remote server, forward the port over SSH:
 
 ```bash
-ssh -L 8766:127.0.0.1:8766 user@server
+ssh -L 8766:127.0.0.1:8766 -L 6006:127.0.0.1:6006 user@server
 ```
 
 ## Paper

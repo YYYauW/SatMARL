@@ -16,7 +16,7 @@ conda create -n satmarl python=3.10 -y
 conda activate satmarl
 python -m pip install --upgrade pip
 # 先按服务器驱动版本安装 PyTorch，命令见 https://pytorch.org/get-started/locally/
-python -m pip install -e .
+python -m pip install -e ".[monitoring]"
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 python -m unittest discover -s tests -v
 ```
@@ -39,6 +39,7 @@ python scripts/run_fast_slow_server_pipeline.py \
 - `runs/fast_slow_smoke/pipeline.json`
 - `runs/fast_slow_smoke/results.json`
 - 每个训练目录下的 `metrics.json` 和 `checkpoints/latest.pt`
+- 每个训练目录下的 `tensorboard/events.out.tfevents.*`
 - 每个独立测试目录下的 `summary.json`、`rollout.json`、`schedule.csv`
 
 ## 3. 在 tmux 中启动完整训练
@@ -60,21 +61,35 @@ tmux attach -t satmarl
 
 ## 4. 查看实时曲线
 
-训练服务器默认只监听 `127.0.0.1:8766`。从你的 Windows 电脑建立隧道：
+训练服务器默认只监听本机的 HTML 端口 8766 和 TensorBoard 端口 6006。
+从你的 Windows 电脑建立一个包含两个端口的隧道：
 
 ```powershell
-ssh -L 8766:127.0.0.1:8766 yw@服务器IP
+ssh -L 8766:127.0.0.1:8766 -L 6006:127.0.0.1:6006 yw@服务器IP
 ```
 
-浏览器打开：
+浏览器分别打开：
 
-`http://127.0.0.1:8766/web/fast_slow.html`
+- 原始实验面板：`http://127.0.0.1:8766/web/fast_slow.html`
+- TensorBoard：`http://127.0.0.1:6006`
 
 页面每 5 秒更新训练回报、完成任务数、有效任务机会率和冲突曲线，
 并在测试结束后显示多种子均值、标准差、完成率和归一化冲突率。
+TensorBoard 单独显示 PPO 损失、回报、机会率、任务、约束、课程和吞吐量。
+
+如果训练已经启动，只想补开两个监控服务，可另开一个 tmux 窗口运行：
+
+```bash
+RUN_ROOT="$PWD/runs/fast_slow_aaai" bash scripts/start_monitoring.sh
+```
+
+若旧版浏览器日志反复出现 `GET /runs/fast_slow_aaai/pipeline.json 404`，说明
+该运行目录尚未启动流水线，或实际 `RUN_ROOT` 不同；这不是强化学习进程崩溃。
+新版面板会直接显示“not_started”，不再用重复 404 表达这个状态。
 
 若只能使用 ToDesk，可直接在服务器浏览器打开同一地址。确需局域网
-直接访问时使用 `HOST=0.0.0.0`，同时只在防火墙中向可信 IP 开放 8766。
+直接访问时使用 `HOST=0.0.0.0 TENSORBOARD_HOST=0.0.0.0`，同时只在
+防火墙中向可信 IP 开放 8766 和 6006。
 
 ## 5. AAAI 对照实验
 

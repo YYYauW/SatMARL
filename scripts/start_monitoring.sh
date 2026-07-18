@@ -3,8 +3,6 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_ROOT="${RUN_ROOT:-${PROJECT_DIR}/runs/fast_slow_aaai}"
-DEVICE="${DEVICE:-cuda}"
-PROFILE="${PROFILE:-paper}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8766}"
 TENSORBOARD_HOST="${TENSORBOARD_HOST:-127.0.0.1}"
@@ -27,15 +25,7 @@ tensorboard --logdir "${RUN_ROOT}/training" --host "${TENSORBOARD_HOST}" \
 TENSORBOARD_PID=$!
 trap 'kill "${DASHBOARD_PID}" "${TENSORBOARD_PID}" 2>/dev/null || true' EXIT INT TERM
 
-echo "Dashboard PID: ${DASHBOARD_PID}"
-echo "Open through an SSH tunnel: http://127.0.0.1:${PORT}/web/fast_slow.html"
-echo "TensorBoard PID: ${TENSORBOARD_PID}"
-echo "TensorBoard through the same tunnel: http://127.0.0.1:${TENSORBOARD_PORT}"
-echo "Training profile=${PROFILE}, device=${DEVICE}, run_root=${RUN_ROOT}"
-
-python -u scripts/run_fast_slow_server_pipeline.py \
-  --run-root "${RUN_ROOT}" \
-  --profile "${PROFILE}" \
-  --tensorboard-url "http://127.0.0.1:${TENSORBOARD_PORT}" \
-  --device "${DEVICE}" \
-  2>&1 | tee -a "${RUN_ROOT}/logs/pipeline_console.log"
+echo "HTML dashboard: http://127.0.0.1:${PORT}/web/fast_slow.html"
+echo "TensorBoard:     http://127.0.0.1:${TENSORBOARD_PORT}"
+echo "Run root:        ${RUN_ROOT}"
+wait

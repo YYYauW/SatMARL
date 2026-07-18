@@ -51,6 +51,11 @@ def main() -> None:
     )
     parser.add_argument("--profile", choices=["smoke", "paper"], default="paper")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument(
+        "--tensorboard-url",
+        default="http://127.0.0.1:6006",
+        help="Public URL displayed by the HTML dashboard.",
+    )
     parser.add_argument("--seeds", type=int, nargs="+", default=[701, 702, 703])
     parser.add_argument(
         "--include-ablations", action=argparse.BooleanOptionalAction, default=True
@@ -140,6 +145,7 @@ def main() -> None:
         "training_runs": [],
         "stages": [],
         "dashboard": "/web/fast_slow.html",
+        "tensorboard_url": args.tensorboard_url,
         "results": web_path(results_path),
     }
 
@@ -209,6 +215,7 @@ def main() -> None:
                         "seed": seed,
                         "metrics": web_path(metrics_path),
                         "checkpoint": str(checkpoint),
+                        "tensorboard": str(train_dir / "tensorboard"),
                     }
                 )
                 update(
@@ -240,6 +247,7 @@ def main() -> None:
                     "--fov-deg", "45",
                     "--max-off-nadir-deg", "45",
                     "--run-dir", str(train_dir),
+                    "--tensorboard",
                     "--device", args.device,
                     *method["flags"],
                 ]

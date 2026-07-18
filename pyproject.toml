@@ -8,5 +8,10 @@ dependencies = [
   "gymnasium>=0.29",
 ]
 
+[project.optional-dependencies]
+monitoring = [
+  "tensorboard>=2.14",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
