@@ -169,6 +169,7 @@
   </main>
   <script>
     const algorithms = [
+      { id: "oasis", label: "OASIS", color: "#b794f4" },
       { id: "ps_dqn", label: "Shared Double DQN", color: "#55c7a0" },
       { id: "ippo", label: "IPPO", color: "#63b3ed" },
       { id: "mappo", label: "MAPPO", color: "#f2c14e" },
@@ -177,7 +178,7 @@
     const params = new URLSearchParams(window.location.search);
     const requestedRun = (params.get("run") || "comparison").replace(/[^a-zA-Z0-9_/-]/g, "");
     const runRoot = requestedRun.includes("..") ? "comparison" : requestedRun.replace(/^\/+/, "");
-    const state = { suite: null, runs: {}, selected: "ps_dqn" };
+    const state = { suite: null, runs: {}, selected: "oasis" };
     const el = {
       suiteDot: document.getElementById("suiteDot"),
       suiteStatus: document.getElementById("suiteStatus"),
