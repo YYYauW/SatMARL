@@ -169,6 +169,7 @@ Open:
 - OASIS-Graph paper pipeline: `http://127.0.0.1:8766/web/oasis_graph.html`
 - Fast--Slow training curves: `http://127.0.0.1:8766/web/fast_slow.html`
 - TensorBoard scalar explorer: `http://127.0.0.1:6006`
+- live baseline TensorBoard bridge: `http://127.0.0.1:6007`
 - OASIS training board: `http://127.0.0.1:8766/web/oasis.html`
 - baseline comparison: `http://127.0.0.1:8766/web/compare.html`
 - representative schedule/orbit replay: `http://127.0.0.1:8766/web/eval.html`
@@ -176,8 +177,23 @@ Open:
 For a remote server, forward the port over SSH:
 
 ```bash
-ssh -L 8766:127.0.0.1:8766 -L 6006:127.0.0.1:6006 user@server
+ssh -L 8766:127.0.0.1:8766 -L 6006:127.0.0.1:6006 \
+  -L 6007:127.0.0.1:6007 user@server
 ```
+
+Baseline trainers keep their resumable history in `metrics.json`.  Mirror an
+already-running 64-satellite baseline suite into TensorBoard without restarting
+training:
+
+```bash
+RUN_ROOTS="$PWD/runs/rl64_seed701 $PWD/runs/rl64_seed702 $PWD/runs/rl64_seed703" \
+  bash scripts/start_baseline_tensorboard.sh
+```
+
+Open `http://127.0.0.1:6007`.  The bridge backfills existing episodes and then
+polls each algorithm's `metrics.json` every five seconds.  Its event files are
+written below `runs/baseline_tensorboard/`; the source experiment artifacts are
+never modified.
 
 ## Paper
 

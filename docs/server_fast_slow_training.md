@@ -101,6 +101,25 @@ RUN_ROOT="$PWD/runs/fast_slow_aaai" bash scripts/start_monitoring.sh
 - `fast_slow_no_factor`：移除任务竞争因子消息；
 - `fast_slow_no_bid`：移除学习型资源竞争出价。
 
+## 已运行基线接入 TensorBoard
+
+IPPO、MAPPO、QMIX 和 PS-DQN 的可恢复训练记录保存在各自的
+`metrics.json`。无需停止或重启训练，可启动实时桥接器回填已有 episode
+并持续写入 TensorBoard event：
+
+```bash
+cd ~/SatMARL
+conda activate satmarl
+tmux new -s baseline-tb
+RUN_ROOTS="$PWD/runs/rl64_seed701 $PWD/runs/rl64_seed702 $PWD/runs/rl64_seed703" \
+  PORT=6007 bash scripts/start_baseline_tensorboard.sh
+```
+
+按 `Ctrl+B`、`D` 将监控留在后台，在服务器浏览器打开
+`http://127.0.0.1:6007`。桥接日志位于
+`runs/baseline_tensorboard/logs/bridge.log`，TensorBoard 服务日志位于
+`runs/baseline_tensorboard/logs/tensorboard.log`。
+
 IPPO、MAPPO、QMIX、PS-DQN 必须在相同 64 星、3,072 任务预算下重新
 训练，不能用旧的 16 星检查点冒充公平主对照。可为每个种子分别运行：
 
