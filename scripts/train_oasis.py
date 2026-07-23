@@ -54,6 +54,12 @@ def make_config(args: argparse.Namespace) -> EnvConfig:
         max_steps=args.max_steps,
         candidate_k=args.candidate_k,
         neighbor_k=args.neighbor_k,
+        ephemeris_cache_path=(
+            str(args.ephemeris_cache.resolve()) if args.ephemeris_cache else None
+        ),
+        task_catalog_path=(
+            str(args.task_catalog.resolve()) if args.task_catalog else None
+        ),
         step_duration_seconds=args.step_duration_seconds,
         random_seed=args.seed,
         task_layout=args.task_layout,
@@ -395,8 +401,29 @@ def main() -> None:
     parser.add_argument("--neighbor-k", type=int, default=6)
     parser.add_argument(
         "--task-layout",
-        choices=["global_random", "curriculum_visible", "mixed", "mixed_curriculum"],
+        choices=[
+            "global_random",
+            "curriculum_visible",
+            "mixed",
+            "mixed_curriculum",
+            "catalog",
+        ],
         default="mixed",
+    )
+    parser.add_argument(
+        "--ephemeris-cache",
+        type=Path,
+        default=None,
+        help=(
+            "NPZ state-vector cache generated from orbital six elements, "
+            "archived TLEs/SGP4, or another external propagator."
+        ),
+    )
+    parser.add_argument(
+        "--task-catalog",
+        type=Path,
+        default=None,
+        help="CSV containing target coordinates and optional request attributes.",
     )
     parser.add_argument("--curriculum-visible-fraction", type=float, default=0.85)
     parser.add_argument("--curriculum-ground-track-jitter-deg", type=float, default=5.0)
@@ -496,6 +523,13 @@ def main() -> None:
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
+    if (args.ephemeris_cache is None) != (args.task_catalog is None):
+        parser.error(
+            "--ephemeris-cache and --task-catalog must be supplied together for "
+            "an external ephemeris/catalog run."
+        )
+    if args.task_catalog is not None:
+        args.task_layout = "catalog"
     if args.slow_interval < 1:
         parser.error("--slow-interval must be at least 1")
     if args.slow_intent_dim < 1:

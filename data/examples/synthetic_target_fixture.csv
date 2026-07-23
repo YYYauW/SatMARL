@@ -1,0 +1,2 @@
+target_id,target_name,latitude_deg,longitude_deg,priority,release_step,deadline_step,required_mode,required_resolution_m,required_swath_km,min_sun_elevation_deg,cooperation_mode,required_observers
+synthetic_nadir,Synthetic nadir smoke target,4.3587720432,-22.8374801993,9,0,239,optical,20,1,-90,single,1

@@ -128,6 +128,27 @@ def target_attitude_lvlh(
     return roll, pitch, 0.0
 
 
+def target_attitude_ecef(
+    satellite_ecef: np.ndarray,
+    velocity_ecef: np.ndarray,
+    target_ecef: np.ndarray,
+) -> tuple[float, float, float]:
+    """Return LVLH pointing angles using a frame-consistent ECEF state."""
+
+    los = target_ecef - satellite_ecef
+    los /= max(float(np.linalg.norm(los)), 1e-9)
+    radial = satellite_ecef / max(float(np.linalg.norm(satellite_ecef)), 1e-9)
+    nadir = -radial
+    along = velocity_ecef - np.dot(velocity_ecef, radial) * radial
+    along /= max(float(np.linalg.norm(along)), 1e-9)
+    cross = np.cross(along, nadir)
+    cross /= max(float(np.linalg.norm(cross)), 1e-9)
+    nadir_component = max(1e-9, float(np.dot(los, nadir)))
+    roll = math.degrees(math.atan2(float(np.dot(los, cross)), nadir_component))
+    pitch = math.degrees(math.atan2(float(np.dot(los, along)), nadir_component))
+    return roll, pitch, 0.0
+
+
 def sun_unit_ecef(day_of_year: float, utc_hour: float) -> np.ndarray:
     declination = math.radians(
         23.44 * math.sin(2.0 * math.pi * (day_of_year - 81.0) / 365.25)

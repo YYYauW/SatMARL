@@ -133,6 +133,13 @@ python scripts/run_fast_slow_server_pipeline.py --profile paper --device cuda
 See `docs/server_fast_slow_training.md` for conda, tmux, resume, GPU, SSH
 tunnel, fair RL baseline, and artifact instructions.
 
+The primary physics-based experiment now uses a simulated Walker constellation
+defined by six Keplerian orbital elements; see
+`docs/kepler_constellation_server_experiment.md`. Archived TLE/SGP4 input is
+retained only as an optional future extension in
+`docs/real_orbit_server_experiment.md`. Both paths apply the same 5-second
+acquisition, 45-degree visibility, resource, and MARL constraints.
+
 Install monitoring support and launch the JSON dashboard plus TensorBoard:
 
 ```bash

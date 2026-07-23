@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -23,9 +24,11 @@ from .orbital import (
     satellite_is_sunlit,
     sun_elevation_deg,
     sun_unit_ecef,
+    target_attitude_ecef,
     target_attitude_lvlh,
     target_geometry,
 )
+from .real_scenario import EphemerisCache, load_ephemeris_cache, load_task_catalog
 
 try:
     from gymnasium import spaces
@@ -56,6 +59,38 @@ class SatTaskingEnv:
 
     def __init__(self, config: EnvConfig | None = None):
         self.config = config or EnvConfig()
+        self._ephemeris: EphemerisCache | None = None
+        if self.config.ephemeris_cache_path:
+            self._ephemeris = load_ephemeris_cache(
+                self.config.ephemeris_cache_path,
+                expected_satellites=self.config.num_satellites,
+                required_steps=(
+                    self.config.max_steps + self.config.planning_lookahead_steps
+                ),
+                expected_step_duration_seconds=self.config.step_duration_seconds,
+            )
+            start_utc = self._ephemeris.metadata.get("start_utc")
+            if start_utc:
+                start = datetime.fromisoformat(str(start_utc).replace("Z", "+00:00"))
+                self.config.epoch_day_of_year = float(start.timetuple().tm_yday)
+                self.config.epoch_utc_hour = (
+                    start.hour
+                    + start.minute / 60.0
+                    + (start.second + start.microsecond / 1e6) / 3600.0
+                )
+        self._task_catalog = (
+            load_task_catalog(self.config.task_catalog_path)
+            if self.config.task_catalog_path
+            else None
+        )
+        if (
+            self._task_catalog is not None
+            and len(self._task_catalog) < self.config.num_tasks
+        ):
+            raise ValueError(
+                f"Task catalog has {len(self._task_catalog)} rows, but "
+                f"num_tasks={self.config.num_tasks}."
+            )
         self.possible_agents = [
             f"satellite_{idx}" for idx in range(self.config.num_satellites)
         ]
@@ -334,6 +369,7 @@ class SatTaskingEnv:
         ]
         return {
             "config": asdict(self.config),
+            "scenario": self._scenario_metadata(),
             "step": self._step,
             "completed_tasks": len(completed),
             "cooperative_completed_tasks": sum(
@@ -378,6 +414,33 @@ class SatTaskingEnv:
             "avoidable_idle_actions": self._avoidable_idle_actions,
         }
 
+    def _scenario_metadata(self) -> dict[str, Any]:
+        target_catalog = self.config.task_catalog_path
+        return {
+            "orbit_source": (
+                self._ephemeris.summary()
+                if self._ephemeris is not None
+                else {"mode": "synthetic_two_body"}
+            ),
+            "task_source": {
+                "mode": "external_catalog" if target_catalog else "synthetic",
+                "path": str(target_catalog) if target_catalog else None,
+                "rows": len(self._task_catalog) if self._task_catalog is not None else None,
+            },
+        }
+
+    def _propagate_satellite(
+        self, sat: SatelliteState, step: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if self._ephemeris is not None:
+            return self._ephemeris.state(step, sat.sat_id)
+        return propagate_kepler(
+            sat.orbital_elements,
+            step * self.config.step_duration_seconds,
+            self.config.earth_mu_km3_s2,
+            self.config.earth_rotation_rate_rad_s,
+        )
+
     def _build_satellites(self) -> list[SatelliteState]:
         cfg = self.config
         satellites: list[SatelliteState] = []
@@ -396,18 +459,49 @@ class SatTaskingEnv:
         plane_argp = self._rng.uniform(0.0, 360.0, cfg.num_planes)
 
         for sat_id in range(cfg.num_satellites):
-            plane_id = sat_id % cfg.num_planes
+            plane_id = (
+                int(self._ephemeris.plane_ids[sat_id])
+                if self._ephemeris is not None
+                and self._ephemeris.plane_ids is not None
+                else sat_id % cfg.num_planes
+            )
             slot = sat_id // cfg.num_planes
             mean_anomaly = (360.0 * slot / sats_per_plane) % 360.0
-            semi_major_axis = cfg.earth_radius_km + float(plane_altitudes[plane_id])
-            elements = OrbitalElements(
-                semi_major_axis_km=semi_major_axis,
-                eccentricity=float(plane_eccentricities[plane_id]),
-                inclination_deg=float(plane_inclinations[plane_id]),
-                raan_deg=float(360.0 * plane_id / cfg.num_planes),
-                argument_of_perigee_deg=float(plane_argp[plane_id]),
-                mean_anomaly_deg=float(mean_anomaly),
+            external_elements = (
+                self._ephemeris.orbital_elements[sat_id]
+                if self._ephemeris is not None
+                and self._ephemeris.orbital_elements is not None
+                else None
             )
+            if external_elements is not None:
+                elements = OrbitalElements(
+                    semi_major_axis_km=float(
+                        external_elements["semi_major_axis_km"]
+                    ),
+                    eccentricity=float(external_elements["eccentricity"]),
+                    inclination_deg=float(external_elements["inclination_deg"]),
+                    raan_deg=float(external_elements["raan_deg"]),
+                    argument_of_perigee_deg=float(
+                        external_elements["argument_of_perigee_deg"]
+                    ),
+                    mean_anomaly_deg=float(
+                        external_elements["mean_anomaly_deg"]
+                    ),
+                )
+                mean_anomaly = elements.mean_anomaly_deg
+                semi_major_axis = elements.semi_major_axis_km
+            else:
+                semi_major_axis = (
+                    cfg.earth_radius_km + float(plane_altitudes[plane_id])
+                )
+                elements = OrbitalElements(
+                    semi_major_axis_km=semi_major_axis,
+                    eccentricity=float(plane_eccentricities[plane_id]),
+                    inclination_deg=float(plane_inclinations[plane_id]),
+                    raan_deg=float(360.0 * plane_id / cfg.num_planes),
+                    argument_of_perigee_deg=float(plane_argp[plane_id]),
+                    mean_anomaly_deg=float(mean_anomaly),
+                )
             mean_motion = math.sqrt(cfg.earth_mu_km3_s2 / semi_major_axis**3)
             orbit_rate = mean_motion * cfg.step_duration_seconds / (2.0 * math.pi)
             selector = sat_id % 10
@@ -518,12 +612,7 @@ class SatTaskingEnv:
                 anchor_step = int(np.clip(anchor_step, 0, cfg.max_steps - 1))
 
             elapsed = anchor_step * cfg.step_duration_seconds
-            _, _, sat_ecef = propagate_kepler(
-                sat.orbital_elements,
-                elapsed,
-                cfg.earth_mu_km3_s2,
-                cfg.earth_rotation_rate_rad_s,
-            )
+            _, _, sat_ecef = self._propagate_satellite(sat, anchor_step)
             latitude, longitude, _ = ecef_to_spherical(sat_ecef, cfg.earth_radius_km)
             jitter_deg = max(0.0, cfg.curriculum_ground_track_jitter_deg)
             if jitter_deg > 0.0:
@@ -566,6 +655,9 @@ class SatTaskingEnv:
         return release, deadline, latitude, longitude, None
 
     def _build_tasks(self) -> list[TaskState]:
+        if self._task_catalog is not None:
+            return self._build_catalog_tasks()
+
         cfg = self.config
         tasks: list[TaskState] = []
         min_window = max(1, cfg.min_task_window)
@@ -635,6 +727,170 @@ class SatTaskingEnv:
                     cooperation_mode=cooperation_mode,
                     required_observers=required_observers,
                     max_coordination_gap_steps=cfg.sequential_max_gap_steps,
+                )
+            )
+        return tasks
+
+    @staticmethod
+    def _catalog_value(
+        row: dict[str, str], key: str, default: float | int | str
+    ) -> float | int | str:
+        value = row.get(key, "")
+        return default if value == "" else value
+
+    def _build_catalog_tasks(self) -> list[TaskState]:
+        cfg = self.config
+        assert self._task_catalog is not None
+        tasks: list[TaskState] = []
+        min_window = max(1, cfg.min_task_window)
+        max_window = max(min_window, cfg.max_task_window)
+
+        for task_id, row in enumerate(self._task_catalog[: cfg.num_tasks]):
+            latitude = float(row["latitude_deg"])
+            longitude = self._wrap_longitude(float(row["longitude_deg"]))
+            if not -90.0 <= latitude <= 90.0:
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has invalid latitude {latitude}."
+                )
+
+            window = int(self._rng.integers(min_window, max_window + 1))
+            sampled_release, sampled_deadline = self._sample_random_task_schedule(window)
+            release = int(self._catalog_value(row, "release_step", sampled_release))
+            deadline = int(self._catalog_value(row, "deadline_step", sampled_deadline))
+            if not (0 <= release <= deadline < cfg.max_steps):
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has invalid release/deadline "
+                    f"{release}/{deadline} for max_steps={cfg.max_steps}."
+                )
+
+            mode = str(
+                self._catalog_value(row, "required_mode", self._sample_task_mode(None))
+            ).lower()
+            if mode not in {"optical", "sar", "infrared"}:
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has unsupported mode {mode!r}."
+                )
+            if mode == "optical":
+                default_resolution = float(self._rng.uniform(2.0, 10.0))
+                default_swath = float(self._rng.uniform(10.0, 65.0))
+                default_min_sun = cfg.optical_min_sun_elevation_deg
+            elif mode == "sar":
+                default_resolution = float(self._rng.uniform(8.0, 22.0))
+                default_swath = float(self._rng.uniform(25.0, 110.0))
+                default_min_sun = -90.0
+            else:
+                default_resolution = float(self._rng.uniform(18.0, 40.0))
+                default_swath = float(self._rng.uniform(45.0, 145.0))
+                default_min_sun = -90.0
+
+            cooperation_mode = str(
+                self._catalog_value(row, "cooperation_mode", "")
+            ).lower()
+            if cooperation_mode == "":
+                if self._rng.random() < cfg.cooperative_task_probability:
+                    cooperation_mode = (
+                        "simultaneous"
+                        if self._rng.random() < cfg.simultaneous_task_fraction
+                        else "sequential"
+                    )
+                else:
+                    cooperation_mode = "single"
+            if cooperation_mode not in {"single", "simultaneous", "sequential"}:
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has unsupported "
+                    f"cooperation_mode {cooperation_mode!r}."
+                )
+            default_observers = (
+                1
+                if cooperation_mode == "single"
+                else int(
+                    self._rng.integers(
+                        cfg.cooperative_observers_min,
+                        cfg.cooperative_observers_max + 1,
+                    )
+                )
+            )
+            required_observers = int(
+                self._catalog_value(row, "required_observers", default_observers)
+            )
+            if cooperation_mode == "single":
+                required_observers = 1
+
+            original_data = float(
+                self._catalog_value(
+                    row,
+                    "original_data_mb",
+                    float(
+                        self._rng.uniform(
+                            cfg.original_data_min_mb, cfg.original_data_max_mb
+                        )
+                    ),
+                )
+            )
+            compression = float(
+                self._catalog_value(
+                    row,
+                    "compression_ratio",
+                    float(
+                        self._rng.uniform(
+                            cfg.compression_ratio_min, cfg.compression_ratio_max
+                        )
+                    ),
+                )
+            )
+            tasks.append(
+                TaskState(
+                    task_id=task_id,
+                    target_phase=(longitude + 180.0) / 360.0,
+                    target_lat_deg=latitude,
+                    target_lon_deg=longitude,
+                    priority=float(
+                        self._catalog_value(
+                            row,
+                            "priority",
+                            float(
+                                self._rng.uniform(
+                                    cfg.task_priority_min, cfg.task_priority_max
+                                )
+                            ),
+                        )
+                    ),
+                    release_step=release,
+                    deadline_step=deadline,
+                    energy_cost=float(
+                        self._catalog_value(
+                            row,
+                            "energy_cost",
+                            cfg.base_energy_cost * float(self._rng.uniform(0.75, 1.4)),
+                        )
+                    ),
+                    duration=int(self._catalog_value(row, "duration", 1)),
+                    observation_duration_seconds=float(cfg.point_observation_seconds),
+                    required_mode=mode,
+                    required_resolution_m=float(
+                        self._catalog_value(
+                            row, "required_resolution_m", default_resolution
+                        )
+                    ),
+                    required_swath_km=float(
+                        self._catalog_value(row, "required_swath_km", default_swath)
+                    ),
+                    min_sun_elevation_deg=float(
+                        self._catalog_value(
+                            row, "min_sun_elevation_deg", default_min_sun
+                        )
+                    ),
+                    original_data_mb=original_data,
+                    compression_ratio=compression,
+                    cooperation_mode=cooperation_mode,
+                    required_observers=required_observers,
+                    max_coordination_gap_steps=int(
+                        self._catalog_value(
+                            row,
+                            "max_coordination_gap_steps",
+                            cfg.sequential_max_gap_steps,
+                        )
+                    ),
                 )
             )
         return tasks
@@ -725,18 +981,24 @@ class SatTaskingEnv:
         sun_unit = sun_unit_ecef(day, utc_hour)
         self._sat_geometry = []
         for sat in self._satellites:
-            position_eci, velocity_eci, position_ecef = propagate_kepler(
-                sat.orbital_elements,
-                elapsed,
-                cfg.earth_mu_km3_s2,
-                cfg.earth_rotation_rate_rad_s,
+            position_eci, velocity_eci, position_ecef = self._propagate_satellite(
+                sat, self._step
             )
             lat, lon, altitude = ecef_to_spherical(position_ecef, cfg.earth_radius_km)
-            mean_motion = math.sqrt(
-                cfg.earth_mu_km3_s2 / sat.orbital_elements.semi_major_axis_km**3
-            )
-            mean_anomaly = math.radians(sat.orbital_elements.mean_anomaly_deg) + mean_motion * elapsed
-            sat.phase = float((mean_anomaly / (2.0 * math.pi)) % 1.0)
+            if self._ephemeris is not None:
+                sat.phase = float(
+                    (math.atan2(position_ecef[1], position_ecef[0]) / (2.0 * math.pi))
+                    % 1.0
+                )
+            else:
+                mean_motion = math.sqrt(
+                    cfg.earth_mu_km3_s2 / sat.orbital_elements.semi_major_axis_km**3
+                )
+                mean_anomaly = (
+                    math.radians(sat.orbital_elements.mean_anomaly_deg)
+                    + mean_motion * elapsed
+                )
+                sat.phase = float((mean_anomaly / (2.0 * math.pi)) % 1.0)
             self._sat_geometry.append(
                 {
                     "eci": position_eci,
@@ -858,12 +1120,7 @@ class SatTaskingEnv:
             for offset in range(cfg.planning_lookahead_steps + 1):
                 planned_step = self._step + offset
                 elapsed = planned_step * cfg.step_duration_seconds
-                _, _, sat_ecef = propagate_kepler(
-                    sat.orbital_elements,
-                    elapsed,
-                    cfg.earth_mu_km3_s2,
-                    cfg.earth_rotation_rate_rad_s,
-                )
+                _, _, sat_ecef = self._propagate_satellite(sat, planned_step)
                 offset_ecef.append(sat_ecef)
             subpoint_units = np.stack(
                 [position / max(float(np.linalg.norm(position)), 1e-9) for position in offset_ecef]
@@ -1318,11 +1575,8 @@ class SatTaskingEnv:
         if offset_steps == 0:
             sat_geo = self._sat_geometry[sat.sat_id]
         else:
-            position_eci, velocity_eci, position_ecef = propagate_kepler(
-                sat.orbital_elements,
-                elapsed,
-                cfg.earth_mu_km3_s2,
-                cfg.earth_rotation_rate_rad_s,
+            position_eci, velocity_eci, position_ecef = self._propagate_satellite(
+                sat, planned_step
             )
             sat_geo = {
                 "eci": position_eci,
@@ -1335,14 +1589,21 @@ class SatTaskingEnv:
         elevation, off_nadir, slant_range, earth_visible = target_geometry(
             sat_geo["ecef"], target_ecef
         )
-        target_roll, target_pitch, target_yaw = target_attitude_lvlh(
-            sat_geo["eci"],
-            sat_geo["velocity_eci"],
-            sat_geo["ecef"],
-            target_ecef,
-            cfg.earth_rotation_rate_rad_s,
-            elapsed,
-        )
+        if self._ephemeris is not None:
+            target_roll, target_pitch, target_yaw = target_attitude_ecef(
+                sat_geo["ecef"],
+                self._ephemeris.ecef_velocity(planned_step, sat.sat_id),
+                target_ecef,
+            )
+        else:
+            target_roll, target_pitch, target_yaw = target_attitude_lvlh(
+                sat_geo["eci"],
+                sat_geo["velocity_eci"],
+                sat_geo["ecef"],
+                target_ecef,
+                cfg.earth_rotation_rate_rad_s,
+                elapsed,
+            )
         cos_off = max(math.cos(math.radians(off_nadir)), 0.1)
         altitude = max(1.0, float(sat_geo["altitude_km"]))
         effective_resolution = sat.resolution_m * slant_range / altitude

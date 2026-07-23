@@ -45,6 +45,16 @@ def config_from_checkpoint(metrics: dict[str, Any], args: argparse.Namespace) ->
         cfg["task_layout"] = eval_task_layout
         if eval_task_layout == "global_random":
             cfg["curriculum_visible_fraction"] = 0.0
+    ephemeris_cache = getattr(args, "ephemeris_cache", None)
+    task_catalog = getattr(args, "task_catalog", None)
+    if (ephemeris_cache is None) != (task_catalog is None):
+        raise ValueError(
+            "--ephemeris-cache and --task-catalog must be supplied together"
+        )
+    if ephemeris_cache is not None:
+        cfg["ephemeris_cache_path"] = str(ephemeris_cache.resolve())
+        cfg["task_catalog_path"] = str(task_catalog.resolve())
+        cfg["task_layout"] = "catalog"
     allowed = {field.name for field in EnvConfig.__dataclass_fields__.values()}
     return EnvConfig(**{key: value for key, value in cfg.items() if key in allowed})
 
@@ -165,6 +175,8 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--candidate-k", type=int, default=None)
     parser.add_argument("--neighbor-k", type=int, default=None)
+    parser.add_argument("--ephemeris-cache", type=Path, default=None)
+    parser.add_argument("--task-catalog", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=7001)
     args = parser.parse_args()
 

@@ -272,9 +272,17 @@ def main() -> None:
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--candidate-k", type=int, default=None)
     parser.add_argument("--neighbor-k", type=int, default=None)
+    parser.add_argument("--ephemeris-cache", type=Path, default=None)
+    parser.add_argument("--task-catalog", type=Path, default=None)
     parser.add_argument(
         "--eval-task-layout",
-        choices=["global_random", "curriculum_visible", "mixed", "mixed_curriculum"],
+        choices=[
+            "global_random",
+            "curriculum_visible",
+            "mixed",
+            "mixed_curriculum",
+            "catalog",
+        ],
         default=None,
     )
     parser.add_argument("--seed", type=int, default=9001)

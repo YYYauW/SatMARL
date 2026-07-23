@@ -99,6 +99,12 @@ def make_config(args: argparse.Namespace) -> EnvConfig:
         max_steps=args.max_steps,
         candidate_k=args.candidate_k,
         neighbor_k=args.neighbor_k,
+        ephemeris_cache_path=(
+            str(args.ephemeris_cache.resolve()) if args.ephemeris_cache else None
+        ),
+        task_catalog_path=(
+            str(args.task_catalog.resolve()) if args.task_catalog else None
+        ),
         step_duration_seconds=args.step_duration_seconds,
         point_observation_seconds=args.point_observation_seconds,
         payload_fov_min_deg=args.fov_deg,
@@ -292,9 +298,17 @@ def main() -> None:
     parser.add_argument("--fov-deg", type=float, default=45.0)
     parser.add_argument(
         "--task-layout",
-        choices=["global_random", "curriculum_visible", "mixed", "mixed_curriculum"],
+        choices=[
+            "global_random",
+            "curriculum_visible",
+            "mixed",
+            "mixed_curriculum",
+            "catalog",
+        ],
         default="global_random",
     )
+    parser.add_argument("--ephemeris-cache", type=Path, default=None)
+    parser.add_argument("--task-catalog", type=Path, default=None)
     parser.add_argument("--curriculum-visible-fraction", type=float, default=0.0)
     parser.add_argument("--curriculum-ground-track-jitter-deg", type=float, default=5.0)
     parser.add_argument("--curriculum-time-jitter-steps", type=int, default=3)
@@ -337,6 +351,10 @@ def main() -> None:
     parser.add_argument("--stop-file", type=Path, default=None)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
+    if (args.ephemeris_cache is None) != (args.task_catalog is None):
+        parser.error("--ephemeris-cache and --task-catalog must be supplied together")
+    if args.task_catalog is not None:
+        args.task_layout = "catalog"
 
     random.seed(args.seed)
     np.random.seed(args.seed)

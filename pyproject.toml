@@ -12,6 +12,9 @@ dependencies = [
 monitoring = [
   "tensorboard>=2.14",
 ]
+real-orbit = [
+  "skyfield>=1.49",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

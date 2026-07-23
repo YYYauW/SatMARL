@@ -16,6 +16,14 @@ class EnvConfig:
     neighbor_k: int = 6
     random_seed: int | None = 7
 
+    # Optional reproducible scenario inputs.  The ephemeris cache may be built
+    # from simulated Keplerian six-element constellations (the primary path),
+    # archived TLEs/SGP4, or another external propagator.  The task catalog
+    # stores target coordinates and optional request attributes.  Leaving both
+    # unset preserves the original synthetic scenario generator.
+    ephemeris_cache_path: str | None = None
+    task_catalog_path: str | None = None
+
     # Task generation. The realistic default keeps targets globally random.
     # curriculum_visible is for training: it samples many targets near future
     # satellite ground tracks so agents see more meaningful action choices.
