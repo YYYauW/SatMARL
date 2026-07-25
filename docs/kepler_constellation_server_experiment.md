@@ -42,6 +42,31 @@ SAT-001,1,6928.137,0.001,97.6,45,0,5.625
 星座生成器会同时保存六根数 CSV、SHA256、ECI/ECEF 位置和速度缓存。绝对
 UTC 只用于格林尼治恒星时、地球自转和太阳光照计算，不要求与发射时间对应。
 
+## 算法无关的训练与测试任务集
+
+仓库提供固定任务集以及可复现生成器：
+
+```bash
+python scripts/generate_task_catalogs.py \
+  --output-dir data/targets \
+  --train-count 3072 --test-count 3072 \
+  --train-seed 2701 --test-seed 2702 \
+  --max-steps 240 \
+  --minimum-separation-deg 0.2
+```
+
+生成结果为 `train_requests.csv`、`test_requests.csv` 和
+`catalog_manifest.json`。目标位置不是沿卫星轨迹挑选的，而是在
+`sin(latitude)-longitude` 空间采用等面积分层，每个 48×64 单元恰好一个
+目标。训练和测试使用独立随机种子、没有重复坐标，并限制集合内及集合间的
+最小角距离。
+
+任务属性也使用固定配额后独立打乱：载荷类型为 60% optical、30% SAR、
+10% infrared；协同类型为 70% single、20% sequential、10%
+simultaneous；优先级 1--10 基本等频，时间窗在 40--160 步之间分层。
+这是一套不依赖学习算法和卫星地面轨迹的全球合成基准，并不代表真实人口、
+灾害或商业订单的地理分布。
+
 ## 生成并检查星座
 
 ```bash
@@ -70,9 +95,11 @@ python -u scripts/validate_orbit_scenario.py \
   --output runs/kepler_aaai/scenario_report.json
 ```
 
-先检查 `scenario_report.json` 中的几何机会率。不能为 0，也不应长期接近 1。
-正式训练日志中的 `task_decision_opportunity_rate` 还会扣除姿态、载荷、光照、
-分辨率、能源、存储和时间窗限制，是论文应报告的主要机会率。
+先检查 `scenario_report.json` 中的几何机会率，不能为 0。对于 3,072 个全球
+目标，`satellite_step_opportunity_rate` 可能接近 1，因为它只判断每颗卫星
+是否至少看见一个目标；这不表示动作总是可执行。正式训练日志中的
+`task_decision_opportunity_rate` 还会扣除姿态、载荷、光照、分辨率、能源、
+存储和时间窗限制，是论文应报告的主要机会率。
 
 ## 一键服务器训练
 
@@ -131,6 +158,8 @@ ssh -L 6006:127.0.0.1:6006 -L 8766:127.0.0.1:8766 yw@SERVER_IP
 
 重点查看：
 
+- `live/step_in_episode`、`live/completed_tasks` 和
+  `live/task_decision_opportunity_rate`；长 episode 每 10 步刷新一次；
 - `reward`、任务完成数和优先级收益；
 - `task_decision_opportunity_rate`；
 - 有效决策样本数和样本吞吐量；

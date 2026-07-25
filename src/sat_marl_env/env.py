@@ -9,6 +9,15 @@ from typing import Any
 
 import numpy as np
 
+from .area_coverage import (
+    best_strip_center,
+    clip_polygon_to_target,
+    low_discrepancy_rectangle_samples,
+    oriented_strip_polygon,
+    polygon_area,
+    strip_sample_mask,
+    uncovered_centroid,
+)
 from .config import EnvConfig
 from .entities import (
     DataPacketState,
@@ -37,7 +46,7 @@ except Exception:  # pragma: no cover - gymnasium is optional at import time.
 
 
 ActionValue = int | Mapping[str, float | int]
-Plan = dict[str, float | int | str | bool]
+Plan = dict[str, Any]
 Claim = tuple[str, float, float, Plan]
 DownlinkRequest = tuple[str, int, float]
 
@@ -117,6 +126,7 @@ class SatTaskingEnv:
         self._candidate_sets: list[set[int]] = []
         self._station_sets: list[set[int]] = []
         self._local_neighbor_ids: list[set[int]] = []
+        self._area_samples: dict[int, np.ndarray] = {}
         self._last_ground_utilization = 0.0
         self._task_reward_total = 0.0
         self._downlink_reward_total = 0.0
@@ -156,6 +166,7 @@ class SatTaskingEnv:
         self.agents = list(self.possible_agents)
         self._satellites = self._build_satellites()
         self._tasks = self._build_tasks()
+        self._derive_area_requirements()
         self._ground_stations = self._build_ground_stations()
         self._last_ground_utilization = 0.0
         self._task_reward_total = 0.0
@@ -364,6 +375,19 @@ class SatTaskingEnv:
     def summary(self) -> dict[str, Any]:
         completed = [task for task in self._tasks if task.completed_by is not None]
         expired = [task for task in self._tasks if task.expired]
+        area_tasks = [task for task in self._tasks if task.is_area]
+        area_completed = [
+            task for task in area_tasks if task.completed_by is not None
+        ]
+        total_inside = float(
+            sum(task.inside_imaged_area_km2 for task in area_tasks)
+        )
+        total_outside = float(
+            sum(task.outside_imaged_area_km2 for task in area_tasks)
+        )
+        total_redundant = float(
+            sum(task.redundant_imaged_area_km2 for task in area_tasks)
+        )
         qualities = [
             quality for task in completed for quality in task.observation_qualities
         ]
@@ -375,6 +399,31 @@ class SatTaskingEnv:
             "cooperative_completed_tasks": sum(
                 task.required_observers > 1 for task in completed
             ),
+            "area_tasks": len(area_tasks),
+            "area_completed_tasks": len(area_completed),
+            "area_cooperative_completed_tasks": sum(
+                task.min_contributing_satellites > 1 for task in area_completed
+            ),
+            "mean_area_coverage": float(
+                np.mean([task.coverage_fraction for task in area_tasks])
+            )
+            if area_tasks
+            else 0.0,
+            "priority_weighted_area_coverage": (
+                float(
+                    sum(task.priority * task.coverage_fraction for task in area_tasks)
+                    / max(1e-9, sum(task.priority for task in area_tasks))
+                )
+                if area_tasks
+                else 0.0
+            ),
+            "area_strip_count": int(sum(task.strip_count for task in area_tasks)),
+            "area_inside_imaged_km2": total_inside,
+            "area_outside_imaged_km2": total_outside,
+            "area_redundant_imaged_km2": total_redundant,
+            "area_outside_ratio": total_outside
+            / max(1e-9, total_inside + total_outside),
+            "area_redundancy_ratio": total_redundant / max(1e-9, total_inside),
             "expired_tasks": len(expired),
             "available_tasks": sum(task.available for task in self._tasks),
             "active_tasks": sum(self._task_active(task) for task in self._tasks),
@@ -681,9 +730,10 @@ class SatTaskingEnv:
                 required_swath = self._rng.uniform(45.0, 145.0)
                 min_sun = -90.0
 
-            cooperation_mode = "single"
+            is_area = self._rng.random() < cfg.area_task_fraction
+            cooperation_mode = "coverage" if is_area else "single"
             required_observers = 1
-            if self._rng.random() < cfg.cooperative_task_probability:
+            if not is_area and self._rng.random() < cfg.cooperative_task_probability:
                 cooperation_mode = (
                     "simultaneous"
                     if self._rng.random() < cfg.simultaneous_task_fraction
@@ -702,6 +752,18 @@ class SatTaskingEnv:
             compression = float(
                 self._rng.uniform(cfg.compression_ratio_min, cfg.compression_ratio_max)
             )
+            area_width = (
+                float(self._rng.uniform(cfg.area_width_min_km, cfg.area_width_max_km))
+                if is_area
+                else 0.0
+            )
+            area_height = (
+                float(
+                    self._rng.uniform(cfg.area_height_min_km, cfg.area_height_max_km)
+                )
+                if is_area
+                else 0.0
+            )
             tasks.append(
                 TaskState(
                     task_id=task_id,
@@ -717,7 +779,11 @@ class SatTaskingEnv:
                     duration=int(
                         self._rng.integers(cfg.task_duration_min, cfg.task_duration_max + 1)
                     ),
-                    observation_duration_seconds=float(cfg.point_observation_seconds),
+                    observation_duration_seconds=float(
+                        cfg.area_observation_seconds
+                        if is_area
+                        else cfg.point_observation_seconds
+                    ),
                     required_mode=mode,
                     required_resolution_m=float(required_resolution),
                     required_swath_km=float(required_swath),
@@ -727,6 +793,15 @@ class SatTaskingEnv:
                     cooperation_mode=cooperation_mode,
                     required_observers=required_observers,
                     max_coordination_gap_steps=cfg.sequential_max_gap_steps,
+                    target_type="area" if is_area else "point",
+                    area_width_km=area_width,
+                    area_height_km=area_height,
+                    area_orientation_deg=(
+                        float(self._rng.uniform(0.0, 360.0)) if is_area else 0.0
+                    ),
+                    coverage_threshold=(
+                        cfg.area_coverage_threshold if is_area else 1.0
+                    ),
                 )
             )
         return tasks
@@ -783,10 +858,20 @@ class SatTaskingEnv:
                 default_swath = float(self._rng.uniform(45.0, 145.0))
                 default_min_sun = -90.0
 
+            target_type = str(
+                self._catalog_value(row, "target_type", "point")
+            ).lower()
+            if target_type not in {"point", "area"}:
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has unsupported "
+                    f"target_type {target_type!r}."
+                )
             cooperation_mode = str(
                 self._catalog_value(row, "cooperation_mode", "")
             ).lower()
-            if cooperation_mode == "":
+            if target_type == "area":
+                cooperation_mode = "coverage"
+            elif cooperation_mode == "":
                 if self._rng.random() < cfg.cooperative_task_probability:
                     cooperation_mode = (
                         "simultaneous"
@@ -795,7 +880,13 @@ class SatTaskingEnv:
                     )
                 else:
                     cooperation_mode = "single"
-            if cooperation_mode not in {"single", "simultaneous", "sequential"}:
+            if cooperation_mode not in {
+                "single",
+                "simultaneous",
+                "sequential",
+                "coverage",
+                "auto",
+            }:
                 raise ValueError(
                     f"Task catalog row {task_id + 2} has unsupported "
                     f"cooperation_mode {cooperation_mode!r}."
@@ -815,6 +906,32 @@ class SatTaskingEnv:
             )
             if cooperation_mode == "single":
                 required_observers = 1
+            if target_type == "area":
+                required_observers = 1
+
+            area_width = float(
+                self._catalog_value(row, "area_width_km", 0.0)
+            )
+            area_height = float(
+                self._catalog_value(row, "area_height_km", 0.0)
+            )
+            if target_type == "area" and (
+                area_width <= 0.0 or area_height <= 0.0
+            ):
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} is an area request but "
+                    "area_width_km/area_height_km are not positive."
+                )
+            coverage_threshold = float(
+                self._catalog_value(
+                    row, "coverage_threshold", cfg.area_coverage_threshold
+                )
+            )
+            if target_type == "area" and not 0.0 < coverage_threshold <= 1.0:
+                raise ValueError(
+                    f"Task catalog row {task_id + 2} has invalid "
+                    f"coverage_threshold {coverage_threshold}."
+                )
 
             original_data = float(
                 self._catalog_value(
@@ -865,7 +982,15 @@ class SatTaskingEnv:
                         )
                     ),
                     duration=int(self._catalog_value(row, "duration", 1)),
-                    observation_duration_seconds=float(cfg.point_observation_seconds),
+                    observation_duration_seconds=float(
+                        self._catalog_value(
+                            row,
+                            "observation_duration_seconds",
+                            cfg.area_observation_seconds
+                            if target_type == "area"
+                            else cfg.point_observation_seconds,
+                        )
+                    ),
                     required_mode=mode,
                     required_resolution_m=float(
                         self._catalog_value(
@@ -891,9 +1016,84 @@ class SatTaskingEnv:
                             cfg.sequential_max_gap_steps,
                         )
                     ),
+                    target_type=target_type,
+                    area_width_km=area_width,
+                    area_height_km=area_height,
+                    area_orientation_deg=float(
+                        self._catalog_value(row, "area_orientation_deg", 0.0)
+                    )
+                    % 360.0,
+                    coverage_threshold=(
+                        coverage_threshold if target_type == "area" else 1.0
+                    ),
                 )
             )
         return tasks
+
+    def _derive_area_requirements(self) -> None:
+        """Derive cooperation from target area and compatible payload capacity."""
+
+        cfg = self.config
+        self._area_samples = {}
+        for task in self._tasks:
+            if not task.is_area:
+                continue
+            task.coverage_sample_count = max(64, int(cfg.area_coverage_samples))
+            self._area_samples[task.task_id] = low_discrepancy_rectangle_samples(
+                task.area_width_km,
+                task.area_height_km,
+                task.coverage_sample_count,
+            )
+            compatible = [
+                sat
+                for sat in self._satellites
+                if sat.payload_mode == task.required_mode
+                and sat.resolution_m <= task.required_resolution_m
+            ]
+            best_single_fraction = 0.0
+            for sat in compatible:
+                orbital_speed = math.sqrt(
+                    cfg.earth_mu_km3_s2
+                    / sat.orbital_elements.semi_major_axis_km
+                )
+                ground_speed = (
+                    orbital_speed
+                    * cfg.earth_radius_km
+                    / sat.orbital_elements.semi_major_axis_km
+                )
+                strip_length = ground_speed * task.observation_duration_seconds
+                strip_width = sat.swath_width_km
+                aligned_area = max(
+                    min(task.area_width_km, strip_length)
+                    * min(task.area_height_km, strip_width),
+                    min(task.area_width_km, strip_width)
+                    * min(task.area_height_km, strip_length),
+                )
+                best_single_fraction = max(
+                    best_single_fraction,
+                    aligned_area / max(task.area_km2, 1e-9),
+                )
+            capacity = max(best_single_fraction, 1e-6)
+            task.required_strips = min(
+                cfg.area_max_required_strips,
+                max(1, int(math.ceil(task.coverage_threshold / capacity))),
+            )
+            if task.required_strips == 1:
+                task.cooperation_mode = "single"
+                task.min_contributing_satellites = 1
+            else:
+                task.cooperation_mode = "coverage"
+                task.min_contributing_satellites = min(
+                    task.required_strips,
+                    max(
+                        1,
+                        min(
+                            len(compatible),
+                            cfg.area_min_cooperative_satellites,
+                        ),
+                    ),
+                )
+            task.required_observers = task.min_contributing_satellites
 
     def _build_ground_stations(self) -> list[GroundStationState]:
         sites = [
@@ -984,6 +1184,13 @@ class SatTaskingEnv:
             position_eci, velocity_eci, position_ecef = self._propagate_satellite(
                 sat, self._step
             )
+            velocity_ecef = (
+                self._ephemeris.ecef_velocity(self._step, sat.sat_id)
+                if self._ephemeris is not None
+                else self._ecef_velocity_from_eci(
+                    position_ecef, velocity_eci, elapsed
+                )
+            )
             lat, lon, altitude = ecef_to_spherical(position_ecef, cfg.earth_radius_km)
             if self._ephemeris is not None:
                 sat.phase = float(
@@ -1004,6 +1211,7 @@ class SatTaskingEnv:
                     "eci": position_eci,
                     "velocity_eci": velocity_eci,
                     "ecef": position_ecef,
+                    "velocity_ecef": velocity_ecef,
                     "latitude_deg": lat,
                     "longitude_deg": lon,
                     "altitude_km": altitude,
@@ -1074,8 +1282,17 @@ class SatTaskingEnv:
             dtype=np.float64,
         )
         required_swath = np.asarray(
-            [self._tasks[int(task_id)].required_swath_km for task_id in active_ids],
+            [
+                0.0
+                if self._tasks[int(task_id)].is_area
+                else self._tasks[int(task_id)].required_swath_km
+                for task_id in active_ids
+            ],
             dtype=np.float64,
+        )
+        area_requests = np.asarray(
+            [self._tasks[int(task_id)].is_area for task_id in active_ids],
+            dtype=bool,
         )
         min_sun_elevation = np.asarray(
             [self._tasks[int(task_id)].min_sun_elevation_deg for task_id in active_ids],
@@ -1110,7 +1327,7 @@ class SatTaskingEnv:
             unobserved = np.ones(active_ids.size, dtype=bool)
             for observed_task_id in observed_by_satellite[sat_idx]:
                 position = active_positions[observed_task_id]
-                if position >= 0:
+                if position >= 0 and not area_requests[position]:
                     unobserved[position] = False
             # A target visible from 500--650 km LEO must be within roughly 25
             # geocentric degrees of the sub-satellite point.  A conservative
@@ -1247,7 +1464,11 @@ class SatTaskingEnv:
         cfg = self.config
         if plan is None:
             _, _, plan = self._plan_task(sat, task)
-        progress = len(task.observed_by) / max(1, task.required_observers)
+        progress = (
+            task.coverage_fraction
+            if task.is_area
+            else len(task.observed_by) / max(1, task.required_observers)
+        )
         return np.asarray(
             [
                 task.priority / cfg.task_priority_max,
@@ -1258,13 +1479,30 @@ class SatTaskingEnv:
                 np.clip(task.target_lon_deg / 180.0, -1.0, 1.0),
                 self._mode_code(task.required_mode),
                 np.clip(task.required_resolution_m / 40.0, 0.0, 1.0),
-                np.clip(task.required_swath_km / 180.0, 0.0, 1.0),
+                np.clip(
+                    (
+                        task.area_width_km / 300.0
+                        if task.is_area
+                        else task.required_swath_km / 180.0
+                    ),
+                    0.0,
+                    1.0,
+                ),
                 np.clip(task.original_data_mb / max(1.0, cfg.original_data_max_mb), 0.0, 1.0),
                 np.clip(task.compression_ratio, 0.0, 1.0),
                 np.clip(task.compressed_data_mb / cfg.max_storage, 0.0, 1.0),
-                task.duration / max(1, cfg.task_duration_max),
+                np.clip(
+                    (
+                        task.area_height_km / 300.0
+                        if task.is_area
+                        else task.duration / max(1, cfg.task_duration_max)
+                    ),
+                    0.0,
+                    1.0,
+                ),
                 self._cooperation_code(task.cooperation_mode),
-                task.required_observers / max(1, cfg.cooperative_observers_max),
+                task.required_observers
+                / max(1, cfg.cooperative_observers_max, cfg.area_max_required_strips),
                 np.clip(progress, 0.0, 1.0),
                 np.clip(float(plan.get("elevation_deg", -90.0)) / 90.0, -1.0, 1.0),
                 np.clip(float(plan.get("off_nadir_deg", 90.0)) / cfg.max_off_nadir_deg, 0.0, 1.0),
@@ -1394,7 +1632,11 @@ class SatTaskingEnv:
             for task in self._tasks
         )
         collaborative_progress = sum(
-            len(task.observed_by) / max(1, task.required_observers)
+            (
+                task.coverage_fraction
+                if task.is_area
+                else len(task.observed_by) / max(1, task.required_observers)
+            )
             for task in self._tasks
             if task.available and task.required_observers > 1
         )
@@ -1460,7 +1702,7 @@ class SatTaskingEnv:
             result = (False, "satellite_busy", fallback)
         elif not task.available:
             result = (False, "task_not_available", fallback)
-        elif sat.sat_id in task.observed_by:
+        elif sat.sat_id in task.observed_by and not task.is_area:
             result = (False, "already_contributed", fallback)
         elif self._step > task.deadline_step:
             result = (False, "deadline_missed", fallback)
@@ -1501,11 +1743,26 @@ class SatTaskingEnv:
                     + abs(target_pitch - sat.pitch_deg)
                     + abs(target_yaw - sat.yaw_deg)
                 )
-                total_energy = task.energy_cost + slew_deg * cfg.slew_energy_cost_per_deg
+                observation_energy_scale = (
+                    max(
+                        1.0,
+                        task.observation_duration_seconds
+                        / max(cfg.point_observation_seconds, 1e-6),
+                    )
+                    if task.is_area
+                    else 1.0
+                )
+                total_energy = (
+                    task.energy_cost * observation_energy_scale
+                    + slew_deg * cfg.slew_energy_cost_per_deg
+                )
                 if warmup_steps:
                     total_energy += cfg.payload_warmup_energy
                 storage_required = task.compressed_data_mb / max(
-                    1, task.required_observers
+                    1,
+                    task.required_strips
+                    if task.is_area
+                    else task.required_observers,
                 )
                 plan: Plan = {
                     **geometry,
@@ -1546,8 +1803,16 @@ class SatTaskingEnv:
                     reason = "yaw_limit"
                 elif float(geometry["effective_resolution_m"]) > task.required_resolution_m:
                     reason = "resolution_limit"
-                elif float(geometry["effective_swath_km"]) < task.required_swath_km:
+                elif (
+                    not task.is_area
+                    and float(geometry["effective_swath_km"])
+                    < task.required_swath_km
+                ):
                     reason = "swath_limit"
+                elif task.is_area and float(
+                    geometry.get("marginal_coverage_fraction", 0.0)
+                ) < cfg.area_min_marginal_coverage:
+                    reason = "no_new_area_coverage"
                 elif task.required_mode == "optical" and float(
                     geometry["sun_elevation_deg"]
                 ) < task.min_sun_elevation_deg:
@@ -1582,10 +1847,33 @@ class SatTaskingEnv:
                 "eci": position_eci,
                 "velocity_eci": velocity_eci,
                 "ecef": position_ecef,
+                "velocity_ecef": (
+                    self._ephemeris.ecef_velocity(planned_step, sat.sat_id)
+                    if self._ephemeris is not None
+                    else self._ecef_velocity_from_eci(
+                        position_ecef, velocity_eci, elapsed
+                    )
+                ),
                 "altitude_km": float(np.linalg.norm(position_ecef))
                 - cfg.earth_radius_km,
             }
-        target_ecef = self._task_ecef[task.task_id]
+        center_u_km = 0.0
+        center_v_km = 0.0
+        target_lat_deg = task.target_lat_deg
+        target_lon_deg = task.target_lon_deg
+        if task.is_area:
+            samples = self._area_samples[task.task_id]
+            center_u_km, center_v_km = uncovered_centroid(
+                samples, task.coverage_mask
+            )
+            target_lat_deg, target_lon_deg = self._task_local_to_geodetic(
+                task, center_u_km, center_v_km
+            )
+            target_ecef = geodetic_to_ecef(
+                target_lat_deg, target_lon_deg, cfg.earth_radius_km
+            )
+        else:
+            target_ecef = self._task_ecef[task.task_id]
         elevation, off_nadir, slant_range, earth_visible = target_geometry(
             sat_geo["ecef"], target_ecef
         )
@@ -1620,7 +1908,7 @@ class SatTaskingEnv:
             if offset_steps == 0
             else sun_elevation_deg(target_ecef, sun_unit_ecef(day, utc_hour))
         )
-        return {
+        plan: Plan = {
             "elevation_deg": float(elevation),
             "off_nadir_deg": float(off_nadir),
             "slant_range_km": float(slant_range),
@@ -1633,6 +1921,220 @@ class SatTaskingEnv:
             "target_pitch_deg": float(target_pitch),
             "target_yaw_deg": float(target_yaw),
         }
+        if task.is_area:
+            ground_heading, ground_speed = self._ground_track_heading_speed(
+                sat_geo["ecef"],
+                sat_geo["velocity_ecef"],
+                task.target_lat_deg,
+                task.target_lon_deg,
+            )
+            relative_heading = (
+                ground_heading - task.area_orientation_deg + 180.0
+            ) % 360.0 - 180.0
+            strip_length = max(
+                1e-6, ground_speed * task.observation_duration_seconds
+            )
+            strip_width = max(1e-6, effective_swath)
+            optimized_u, optimized_v = best_strip_center(
+                self._area_samples[task.task_id],
+                task.coverage_mask,
+                strip_length,
+                strip_width,
+                relative_heading,
+                task.area_width_km,
+                task.area_height_km,
+            )
+            if (
+                abs(optimized_u - center_u_km) > 1e-6
+                or abs(optimized_v - center_v_km) > 1e-6
+            ):
+                center_u_km, center_v_km = optimized_u, optimized_v
+                target_lat_deg, target_lon_deg = self._task_local_to_geodetic(
+                    task, center_u_km, center_v_km
+                )
+                target_ecef = geodetic_to_ecef(
+                    target_lat_deg, target_lon_deg, cfg.earth_radius_km
+                )
+                elevation, off_nadir, slant_range, earth_visible = target_geometry(
+                    sat_geo["ecef"], target_ecef
+                )
+                if self._ephemeris is not None:
+                    target_roll, target_pitch, target_yaw = target_attitude_ecef(
+                        sat_geo["ecef"],
+                        sat_geo["velocity_ecef"],
+                        target_ecef,
+                    )
+                else:
+                    target_roll, target_pitch, target_yaw = target_attitude_lvlh(
+                        sat_geo["eci"],
+                        sat_geo["velocity_eci"],
+                        sat_geo["ecef"],
+                        target_ecef,
+                        cfg.earth_rotation_rate_rad_s,
+                        elapsed,
+                    )
+                cos_off = max(math.cos(math.radians(off_nadir)), 0.1)
+                effective_resolution = sat.resolution_m * slant_range / altitude
+                fov_footprint = 2.0 * slant_range * math.tan(
+                    math.radians(sat.field_of_view_deg / 2.0)
+                )
+                effective_swath = min(
+                    sat.swath_width_km / cos_off, fov_footprint
+                )
+                strip_width = max(1e-6, effective_swath)
+                resolution_quality = min(
+                    1.0,
+                    task.required_resolution_m
+                    / max(effective_resolution, 1e-6),
+                )
+                quality = (
+                    max(0.0, cos_off) ** cfg.quality_off_nadir_power
+                    * resolution_quality
+                )
+                sun_elevation = sun_elevation_deg(
+                    target_ecef, sun_unit_ecef(day, utc_hour)
+                )
+                plan.update(
+                    {
+                        "elevation_deg": float(elevation),
+                        "off_nadir_deg": float(off_nadir),
+                        "slant_range_km": float(slant_range),
+                        "earth_visible": bool(earth_visible),
+                        "sun_elevation_deg": float(sun_elevation),
+                        "effective_resolution_m": float(
+                            effective_resolution
+                        ),
+                        "effective_swath_km": float(effective_swath),
+                        "quality": float(np.clip(quality, 0.0, 1.0)),
+                        "target_roll_deg": float(target_roll),
+                        "target_pitch_deg": float(target_pitch),
+                        "target_yaw_deg": float(target_yaw),
+                    }
+                )
+            footprint = oriented_strip_polygon(
+                center_u_km,
+                center_v_km,
+                strip_length,
+                strip_width,
+                relative_heading,
+            )
+            clipped = clip_polygon_to_target(
+                footprint, task.area_width_km, task.area_height_km
+            )
+            strip_area = strip_length * strip_width
+            inside_area = polygon_area(clipped)
+            outside_area = max(0.0, strip_area - inside_area)
+            sample_mask = strip_sample_mask(
+                self._area_samples[task.task_id],
+                center_u_km,
+                center_v_km,
+                strip_length,
+                strip_width,
+                relative_heading,
+            )
+            marginal_mask = sample_mask & ~task.coverage_mask
+            marginal_fraction = (
+                marginal_mask.bit_count() / task.coverage_sample_count
+            )
+            projected_fraction = min(
+                1.0,
+                (task.coverage_mask | sample_mask).bit_count()
+                / task.coverage_sample_count,
+            )
+            new_inside_area = marginal_fraction * task.area_km2
+            plan.update(
+                {
+                    "target_lat_deg": float(target_lat_deg),
+                    "target_lon_deg": float(target_lon_deg),
+                    "strip_center_u_km": float(center_u_km),
+                    "strip_center_v_km": float(center_v_km),
+                    "ground_track_heading_deg": float(ground_heading),
+                    "strip_relative_heading_deg": float(relative_heading),
+                    "strip_length_km": float(strip_length),
+                    "strip_width_km": float(strip_width),
+                    "strip_area_km2": float(strip_area),
+                    "inside_area_km2": float(inside_area),
+                    "outside_area_km2": float(outside_area),
+                    "outside_ratio": float(
+                        outside_area / max(strip_area, 1e-9)
+                    ),
+                    "redundant_area_km2": float(
+                        max(0.0, inside_area - new_inside_area)
+                    ),
+                    "coverage_sample_mask": sample_mask,
+                    "marginal_coverage_fraction": float(marginal_fraction),
+                    "projected_coverage_fraction": float(projected_fraction),
+                    "strip_footprint_local": footprint,
+                }
+            )
+        return plan
+
+    def _ecef_velocity_from_eci(
+        self,
+        position_ecef: np.ndarray,
+        velocity_eci: np.ndarray,
+        elapsed_seconds: float,
+    ) -> np.ndarray:
+        theta = self.config.earth_rotation_rate_rad_s * elapsed_seconds
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        rotation = np.asarray(
+            [[cos_t, sin_t, 0.0], [-sin_t, cos_t, 0.0], [0.0, 0.0, 1.0]]
+        )
+        inertial_velocity_ecef = rotation @ velocity_eci
+        earth_rate = np.asarray(
+            [0.0, 0.0, self.config.earth_rotation_rate_rad_s]
+        )
+        return inertial_velocity_ecef - np.cross(earth_rate, position_ecef)
+
+    def _ground_track_heading_speed(
+        self,
+        position_ecef: np.ndarray,
+        velocity_ecef: np.ndarray,
+        latitude_deg: float,
+        longitude_deg: float,
+    ) -> tuple[float, float]:
+        latitude = math.radians(latitude_deg)
+        longitude = math.radians(longitude_deg)
+        east = np.asarray([-math.sin(longitude), math.cos(longitude), 0.0])
+        north = np.asarray(
+            [
+                -math.sin(latitude) * math.cos(longitude),
+                -math.sin(latitude) * math.sin(longitude),
+                math.cos(latitude),
+            ]
+        )
+        radius_scale = self.config.earth_radius_km / max(
+            float(np.linalg.norm(position_ecef)), 1e-9
+        )
+        east_speed = float(np.dot(velocity_ecef, east)) * radius_scale
+        north_speed = float(np.dot(velocity_ecef, north)) * radius_scale
+        heading = math.degrees(math.atan2(east_speed, north_speed)) % 360.0
+        return heading, math.hypot(east_speed, north_speed)
+
+    def _task_local_to_geodetic(
+        self, task: TaskState, u_km: float, v_km: float
+    ) -> tuple[float, float]:
+        orientation = math.radians(task.area_orientation_deg)
+        north_km = u_km * math.cos(orientation) - v_km * math.sin(
+            orientation
+        )
+        east_km = u_km * math.sin(orientation) + v_km * math.cos(
+            orientation
+        )
+        latitude = math.radians(task.target_lat_deg)
+        target_latitude = task.target_lat_deg + math.degrees(
+            north_km / self.config.earth_radius_km
+        )
+        target_longitude = task.target_lon_deg + math.degrees(
+            east_km
+            / (
+                self.config.earth_radius_km
+                * max(abs(math.cos(latitude)), 1e-4)
+            )
+        )
+        return float(np.clip(target_latitude, -89.9999, 89.9999)), (
+            self._wrap_longitude(target_longitude)
+        )
 
     def _resolve_task_claims(
         self,
@@ -1647,6 +2149,66 @@ class SatTaskingEnv:
                 for agent, _, _, _ in contenders:
                     rewards[agent] += self.config.duplicate_penalty
                     infos[agent]["event"] = "duplicate_task"
+                continue
+
+            if task.is_area:
+                ranked = sorted(
+                    contenders,
+                    key=lambda claim: (
+                        claim[1],
+                        float(
+                            claim[3].get("marginal_coverage_fraction", 0.0)
+                        ),
+                        -float(claim[3].get("outside_ratio", 1.0)),
+                    ),
+                    reverse=True,
+                )
+                winners: list[Claim] = []
+                projected_mask = task.coverage_mask
+                for agent, bid, off_nadir, original_plan in ranked:
+                    plan = dict(original_plan)
+                    sample_mask = int(plan["coverage_sample_mask"])
+                    marginal_mask = sample_mask & ~projected_mask
+                    marginal_fraction = (
+                        marginal_mask.bit_count() / task.coverage_sample_count
+                    )
+                    if marginal_fraction < self.config.area_min_marginal_coverage:
+                        continue
+                    plan["marginal_coverage_fraction"] = marginal_fraction
+                    plan["projected_coverage_fraction"] = min(
+                        1.0,
+                        (projected_mask | sample_mask).bit_count()
+                        / task.coverage_sample_count,
+                    )
+                    plan["redundant_area_km2"] = max(
+                        0.0,
+                        float(plan["inside_area_km2"])
+                        - marginal_fraction * task.area_km2,
+                    )
+                    winners.append((agent, bid, off_nadir, plan))
+                    projected_mask |= sample_mask
+
+                winner_agents = {claim[0] for claim in winners}
+                completed_now = False
+                for claim in winners:
+                    completed_now = self._commit_observation(
+                        task, claim, rewards, infos
+                    ) or completed_now
+                if completed_now:
+                    completed_values.append(task.priority)
+                for agent, _, _, _ in contenders:
+                    if agent in winner_agents:
+                        continue
+                    rewards[agent] += self.config.conflict_penalty
+                    sat = self._satellites[self._agent_index(agent)]
+                    sat.conflict_count += 1
+                    infos[agent].update(
+                        {
+                            "event": "overlapping_strip_conflict",
+                            "task_id": task_id,
+                            "winner": ",".join(sorted(winner_agents)),
+                        }
+                    )
                 continue
 
             if task.cooperation_mode == "simultaneous":
@@ -1725,13 +2287,24 @@ class SatTaskingEnv:
             DataPacketState(
                 task_id=task.task_id,
                 generated_step=finish_step,
-                original_size_mb=task.original_data_mb / max(1, task.required_observers),
+                original_size_mb=task.original_data_mb
+                / max(
+                    1,
+                    task.required_strips
+                    if task.is_area
+                    else task.required_observers,
+                ),
                 compressed_size_mb=storage_required,
                 remaining_mb=storage_required,
                 priority=task.priority,
                 source_satellite_id=sat.sat_id,
             )
         )
+
+        if task.is_area:
+            return self._commit_area_observation(
+                task, claim, rewards, infos, storage_required
+            )
 
         task.observed_by.append(sat.sat_id)
         task.observation_steps.append(finish_step)
@@ -1771,6 +2344,129 @@ class SatTaskingEnv:
                 "quality": float(plan["quality"]),
                 "cooperation_mode": task.cooperation_mode,
                 "observers": list(task.observed_by),
+            }
+        )
+        return completed_now
+
+    def _commit_area_observation(
+        self,
+        task: TaskState,
+        claim: Claim,
+        rewards: dict[str, float],
+        infos: dict[str, dict[str, Any]],
+        storage_required: float,
+    ) -> bool:
+        agent, _, _, plan = claim
+        sat = self._satellites[self._agent_index(agent)]
+        finish_step = int(plan["finish_step"])
+        sample_mask = int(plan["coverage_sample_mask"])
+        marginal_mask = sample_mask & ~task.coverage_mask
+        marginal_fraction = (
+            marginal_mask.bit_count() / task.coverage_sample_count
+        )
+        task.coverage_mask |= sample_mask
+        task.coverage_fraction = min(
+            1.0, task.coverage_mask.bit_count() / task.coverage_sample_count
+        )
+        task.observed_by.append(sat.sat_id)
+        task.observation_steps.append(finish_step)
+        task.observation_qualities.append(float(plan["quality"]))
+        task.strip_count += 1
+        task.inside_imaged_area_km2 += float(plan["inside_area_km2"])
+        task.outside_imaged_area_km2 += float(plan["outside_area_km2"])
+        redundant_area = max(
+            0.0,
+            float(plan["inside_area_km2"])
+            - marginal_fraction * task.area_km2,
+        )
+        task.redundant_imaged_area_km2 += redundant_area
+        task.strip_headings_deg.append(
+            float(plan["ground_track_heading_deg"])
+        )
+        task.strip_footprints_local.append(
+            [
+                (float(point[0]), float(point[1]))
+                for point in plan["strip_footprint_local"]
+            ]
+        )
+        contributors = sorted(set(task.observed_by))
+        completed_now = (
+            task.coverage_fraction + 1e-12 >= task.coverage_threshold
+            and len(contributors) >= task.min_contributing_satellites
+        )
+        if completed_now:
+            task.completed_by_satellites = contributors
+            task.completed_by = contributors[0]
+            task.completed_step = max(task.observation_steps)
+
+        timeliness_multiplier = self._task_reward(
+            task, finish_step
+        ) / max(task.priority, 1e-9)
+        coverage_reward = (
+            task.priority
+            * marginal_fraction
+            * self.config.area_coverage_reward_scale
+            * float(plan["quality"])
+            * timeliness_multiplier
+        )
+        target_area = max(task.area_km2, 1e-9)
+        outside_penalty = (
+            self.config.area_outside_penalty_weight
+            * float(plan["outside_area_km2"])
+            / target_area
+        )
+        redundancy_penalty = (
+            self.config.area_redundancy_penalty_weight
+            * redundant_area
+            / target_area
+        )
+        completion_bonus = 0.0
+        if completed_now:
+            completion_bonus = (
+                self.config.task_completion_bonus
+                + self.config.area_completion_bonus
+            )
+            if task.min_contributing_satellites > 1:
+                completion_bonus += self.config.cooperative_completion_bonus
+        maneuver_penalty = (
+            self.config.maneuver_penalty_per_step
+            * float(plan["maneuver_steps"])
+        )
+        task_reward = (
+            coverage_reward
+            + completion_bonus
+            - outside_penalty
+            - redundancy_penalty
+        )
+        rewards[agent] += task_reward + maneuver_penalty
+        self._task_reward_total += task_reward
+        infos[agent].update(
+            {
+                "event": "area_completed" if completed_now else "area_strip",
+                "task_id": task.task_id,
+                "target_type": "area",
+                "task_reward": coverage_reward,
+                "completion_bonus": completion_bonus,
+                "outside_penalty": outside_penalty,
+                "redundancy_penalty": redundancy_penalty,
+                "finish_step": finish_step,
+                "observation_start_step": int(plan["observation_start_step"]),
+                "total_energy": float(plan["total_energy"]),
+                "compressed_data_mb": storage_required,
+                "quality": float(plan["quality"]),
+                "cooperation_mode": task.cooperation_mode,
+                "observers": contributors,
+                "strip_heading_deg": float(
+                    plan["ground_track_heading_deg"]
+                ),
+                "strip_length_km": float(plan["strip_length_km"]),
+                "strip_width_km": float(plan["strip_width_km"]),
+                "marginal_coverage": marginal_fraction,
+                "coverage_fraction": task.coverage_fraction,
+                "coverage_threshold": task.coverage_threshold,
+                "inside_area_km2": float(plan["inside_area_km2"]),
+                "outside_area_km2": float(plan["outside_area_km2"]),
+                "redundant_area_km2": redundant_area,
             }
         )
         return completed_now
@@ -1884,12 +2580,21 @@ class SatTaskingEnv:
         deadline_margin = max(0, task.deadline_step - int(plan["finish_step"])) / max(
             1, self.config.max_steps
         )
+        area_value = 0.0
+        if task.is_area:
+            area_value = (
+                4.0 * float(plan.get("marginal_coverage_fraction", 0.0))
+                - 1.5 * float(plan.get("outside_ratio", 0.0))
+                - float(plan.get("redundant_area_km2", 0.0))
+                / max(task.area_km2, 1e-9)
+            )
         return (
             task.priority * float(plan["quality"])
             + 0.8 * energy_margin
             + 0.4 * storage_margin
             + 0.2 * deadline_margin
             - 0.03 * float(plan["maneuver_steps"])
+            + area_value
         )
 
     def _task_reward(self, task: TaskState, finish_step: int) -> float:
@@ -2096,7 +2801,12 @@ class SatTaskingEnv:
 
     @staticmethod
     def _cooperation_code(mode: str) -> float:
-        return {"single": 0.0, "sequential": 0.5, "simultaneous": 1.0}.get(mode, 0.0)
+        return {
+            "single": 0.0,
+            "sequential": 0.5,
+            "simultaneous": 1.0,
+            "coverage": 0.75,
+        }.get(mode, 0.0)
 
     @staticmethod
     def _phase_distance(a: float, b: float) -> float:

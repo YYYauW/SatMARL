@@ -253,6 +253,28 @@ def task_payload(env: SatTaskingEnv) -> list[dict]:
             "compressed_data_mb": round(float(task.compressed_data_mb), 3),
             "cooperation_mode": task.cooperation_mode,
             "required_observers": task.required_observers,
+            "target_type": task.target_type,
+            "area_width_km": round(float(task.area_width_km), 3),
+            "area_height_km": round(float(task.area_height_km), 3),
+            "area_orientation_deg": round(float(task.area_orientation_deg), 3),
+            "coverage_threshold": round(float(task.coverage_threshold), 6),
+            "coverage_fraction": round(float(task.coverage_fraction), 6),
+            "required_strips": task.required_strips,
+            "min_contributing_satellites": task.min_contributing_satellites,
+            "strip_count": task.strip_count,
+            "inside_imaged_area_km2": round(
+                float(task.inside_imaged_area_km2), 6
+            ),
+            "outside_imaged_area_km2": round(
+                float(task.outside_imaged_area_km2), 6
+            ),
+            "redundant_imaged_area_km2": round(
+                float(task.redundant_imaged_area_km2), 6
+            ),
+            "strip_headings_deg": [
+                round(float(value), 4) for value in task.strip_headings_deg
+            ],
+            "strip_footprints_local": task.strip_footprints_local,
             "observed_by": list(task.observed_by),
             "completed_by": task.completed_by,
             "completed_step": task.completed_step,
@@ -325,6 +347,17 @@ def main() -> None:
         "task_decision_opportunity_rate",
         "avoidable_idle_actions",
         "forced_idle_actions",
+        "area_tasks",
+        "area_completed_tasks",
+        "area_cooperative_completed_tasks",
+        "mean_area_coverage",
+        "priority_weighted_area_coverage",
+        "area_strip_count",
+        "area_inside_imaged_km2",
+        "area_outside_imaged_km2",
+        "area_redundant_imaged_km2",
+        "area_outside_ratio",
+        "area_redundancy_ratio",
     )
 
     for episode_index in range(eval_episodes):
@@ -466,6 +499,18 @@ def main() -> None:
         "downlinked",
         "winner",
         "reason",
+        "target_type",
+        "strip_heading_deg",
+        "strip_length_km",
+        "strip_width_km",
+        "marginal_coverage",
+        "coverage_fraction",
+        "coverage_threshold",
+        "inside_area_km2",
+        "outside_area_km2",
+        "redundant_area_km2",
+        "outside_penalty",
+        "redundancy_penalty",
     )
     schedule_path.parent.mkdir(parents=True, exist_ok=True)
     with schedule_path.open("w", newline="", encoding="utf-8-sig") as handle:

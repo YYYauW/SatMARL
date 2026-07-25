@@ -26,6 +26,8 @@ The implementation combines:
 - a shared, permutation-equivariant candidate scorer;
 - policy logits reused as learned resource-contention bids;
 - persistent slow strategic intent plus fast opportunity-level execution;
+- area- and payload-derived single/multi-satellite strip collaboration;
+- directed continuous strip footprints with marginal-coverage bidding;
 - centralized training with decentralized execution;
 - exact action masks plus execution-time constraint revalidation.
 
@@ -45,6 +47,8 @@ The parallel multi-agent environment enforces:
 - energy, onboard storage, compression, packets, and segmented downlink;
 - ground-station visibility, channel capacity, and contention;
 - single-satellite, simultaneous cooperative, and sequential cooperative tasks;
+- oriented area requests covered by complementary ground-track strips;
+- explicit inside coverage, outside imaging, and redundant-overlap accounting;
 - hard feasibility masks and execution-time validation.
 
 The orbit model is designed for MARL throughput rather than mission-grade
@@ -139,6 +143,27 @@ defined by six Keplerian orbital elements; see
 retained only as an optional future extension in
 `docs/real_orbit_server_experiment.md`. Both paths apply the same 5-second
 acquisition, 45-degree visibility, resource, and MARL constraints.
+
+Generate the fixed, algorithm-agnostic 3,072/3,072 train/test task catalogs
+with `python scripts/generate_task_catalogs.py --output-dir data/targets`.
+The checked-in manifest records the seeds, class quotas, spatial balance,
+split separation, and file hashes.
+
+For the mixed point/area benchmark (25% point and 75% area), use the checked-in
+`area_train_requests.csv` and `area_test_requests.csv`, or regenerate them:
+
+```bash
+python scripts/generate_task_catalogs.py --output-dir data/targets \
+  --train-count 3072 --test-count 3072 \
+  --train-seed 3701 --test-seed 3702 \
+  --area-fraction 0.75 --file-prefix area_ --overwrite
+```
+
+Area collaboration is not a random label. At environment reset, target size,
+observation duration, compatible payload resolution, swath, and orbital ground
+speed determine whether one strip is sufficient or multiple satellites must
+contribute. See `docs/area_strip_server_experiment.md` for the server command,
+metrics, and ablations.
 
 Install monitoring support and launch the JSON dashboard plus TensorBoard:
 

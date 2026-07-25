@@ -1,0 +1,133 @@
+{
+  "format": "satmarl-task-catalog-v1",
+  "created_at_utc": "2026-07-23T10:06:34.792211Z",
+  "design": {
+    "spatial_sampling": "one jittered point per equal-area sin(latitude)-longitude cell",
+    "orbit_aligned": false,
+    "geographic_demand_model": "global synthetic benchmark",
+    "mode_weights": {
+      "optical": 0.6,
+      "sar": 0.3,
+      "infrared": 0.1
+    },
+    "cooperation_weights": {
+      "single": 0.7,
+      "sequential": 0.2,
+      "simultaneous": 0.1
+    },
+    "priority_design": "balanced integer quotas from 1 through 10",
+    "window_design": "stratified uniform [40, 160] steps",
+    "minimum_within_and_cross_split_separation_deg": 0.2
+  },
+  "parameters": {
+    "train_count": 3072,
+    "test_count": 3072,
+    "train_seed": 2701,
+    "test_seed": 2702,
+    "max_steps": 240,
+    "train_equal_area_grid": [
+      48,
+      64
+    ],
+    "test_equal_area_grid": [
+      48,
+      64
+    ]
+  },
+  "train": {
+    "rows": 3072,
+    "unique_target_ids": 3072,
+    "unique_coordinates": 3072,
+    "mode_counts": {
+      "infrared": 307,
+      "optical": 1843,
+      "sar": 922
+    },
+    "cooperation_counts": {
+      "sequential": 615,
+      "simultaneous": 307,
+      "single": 2150
+    },
+    "priority_counts": {
+      "1": 308,
+      "2": 308,
+      "3": 307,
+      "4": 307,
+      "5": 307,
+      "6": 307,
+      "7": 307,
+      "8": 307,
+      "9": 307,
+      "10": 307
+    },
+    "spatial": {
+      "mean_sin_latitude": -0.0002808907942483681,
+      "std_sin_latitude": 0.5775390627869712,
+      "north_fraction": 0.5,
+      "longitude_resultant_length": 0.00011082909796867396
+    },
+    "time_windows": {
+      "release_min": 0,
+      "release_max": 194,
+      "window_min": 40,
+      "window_max": 160,
+      "window_mean": 100.00032552083333
+    }
+  },
+  "test": {
+    "rows": 3072,
+    "unique_target_ids": 3072,
+    "unique_coordinates": 3072,
+    "mode_counts": {
+      "infrared": 307,
+      "optical": 1843,
+      "sar": 922
+    },
+    "cooperation_counts": {
+      "sequential": 615,
+      "simultaneous": 307,
+      "single": 2150
+    },
+    "priority_counts": {
+      "1": 308,
+      "2": 308,
+      "3": 307,
+      "4": 307,
+      "5": 307,
+      "6": 307,
+      "7": 307,
+      "8": 307,
+      "9": 307,
+      "10": 307
+    },
+    "spatial": {
+      "mean_sin_latitude": -0.00018040596001698932,
+      "std_sin_latitude": 0.5773424464264175,
+      "north_fraction": 0.5,
+      "longitude_resultant_length": 0.0004342243450730833
+    },
+    "time_windows": {
+      "release_min": 0,
+      "release_max": 194,
+      "window_min": 40,
+      "window_max": 160,
+      "window_mean": 99.99739583333333
+    }
+  },
+  "split_audit": {
+    "exact_coordinate_overlap": 0,
+    "minimum_train_separation_deg": 0.3237978050165578,
+    "minimum_test_separation_deg": 0.216774708656019,
+    "minimum_cross_split_separation_deg": 0.2017080878261109
+  },
+  "files": {
+    "train": {
+      "path": "train_requests.csv",
+      "sha256": "25d5bea6c769337a66cd92399a3f35bf3ea16832b5c247c56351b30f21472c41"
+    },
+    "test": {
+      "path": "test_requests.csv",
+      "sha256": "c19c1cea83bdb1bbe770f3d3b317a8f4bfc10c7025c9d8d10a67b8ebd591d955"
+    }
+  }
+}

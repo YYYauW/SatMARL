@@ -106,6 +106,21 @@ class EnvConfig:
     simultaneous_tolerance_steps: int = 2
     sequential_max_gap_steps: int = 120
 
+    # Area requests are continuous oriented rectangles.  Satellite actions are
+    # directed imaging-strip polygons, not grid cells.  A deterministic
+    # low-discrepancy sample set only estimates the cumulative strip union.
+    area_task_fraction: float = 0.0
+    area_width_min_km: float = 20.0
+    area_width_max_km: float = 240.0
+    area_height_min_km: float = 20.0
+    area_height_max_km: float = 240.0
+    area_observation_seconds: float = 20.0
+    area_coverage_threshold: float = 0.95
+    area_coverage_samples: int = 512
+    area_min_marginal_coverage: float = 0.01
+    area_min_cooperative_satellites: int = 2
+    area_max_required_strips: int = 8
+
     idle_penalty: float = -0.01
     forced_idle_penalty: float = 0.0
     invalid_action_penalty: float = -1.0
@@ -123,6 +138,10 @@ class EnvConfig:
     task_completion_bonus: float = 2.0
     cooperative_completion_bonus: float = 4.0
     incomplete_cooperative_reward_scale: float = 0.20
+    area_coverage_reward_scale: float = 8.0
+    area_completion_bonus: float = 5.0
+    area_outside_penalty_weight: float = 1.0
+    area_redundancy_penalty_weight: float = 0.6
 
     task_priority_min: float = 1.0
     task_priority_max: float = 10.0

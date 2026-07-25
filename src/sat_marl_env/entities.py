@@ -103,6 +103,24 @@ class TaskState:
     completed_by: int | None = None
     completed_step: int | None = None
     expired: bool = False
+    target_type: str = "point"
+    area_width_km: float = 0.0
+    area_height_km: float = 0.0
+    area_orientation_deg: float = 0.0
+    coverage_threshold: float = 1.0
+    coverage_sample_count: int = 0
+    coverage_mask: int = 0
+    coverage_fraction: float = 0.0
+    required_strips: int = 1
+    min_contributing_satellites: int = 1
+    strip_count: int = 0
+    inside_imaged_area_km2: float = 0.0
+    outside_imaged_area_km2: float = 0.0
+    redundant_imaged_area_km2: float = 0.0
+    strip_headings_deg: list[float] = field(default_factory=list)
+    strip_footprints_local: list[list[tuple[float, float]]] = field(
+        default_factory=list
+    )
 
     @property
     def compressed_data_mb(self) -> float:
@@ -113,6 +131,14 @@ class TaskState:
     @property
     def available(self) -> bool:
         return self.completed_by is None and not self.expired
+
+    @property
+    def is_area(self) -> bool:
+        return self.target_type == "area"
+
+    @property
+    def area_km2(self) -> float:
+        return max(0.0, self.area_width_km) * max(0.0, self.area_height_km)
 
 
 @dataclass(slots=True)

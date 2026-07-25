@@ -128,8 +128,11 @@ def collect_events(infos: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     for agent, info in infos.items():
         event = info.get("event")
         if event not in {
-            "completed_task",
-            "cooperative_observation",
+              "completed_task",
+              "cooperative_observation",
+              "area_strip",
+              "area_completed",
+              "overlapping_strip_conflict",
             "coordination_failed",
             "lost_conflict",
             "infeasible_claim",
@@ -154,7 +157,19 @@ def collect_events(infos: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             "elevation_deg",
             "downlinked",
             "quality",
-            "cooperation_mode",
+              "cooperation_mode",
+              "target_type",
+              "strip_heading_deg",
+              "strip_length_km",
+              "strip_width_km",
+              "marginal_coverage",
+              "coverage_fraction",
+              "coverage_threshold",
+              "inside_area_km2",
+              "outside_area_km2",
+              "redundant_area_km2",
+              "outside_penalty",
+              "redundancy_penalty",
         ):
             if key in info:
                 value = info[key]

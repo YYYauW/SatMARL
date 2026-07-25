@@ -72,6 +72,15 @@ def make_config(args: argparse.Namespace) -> EnvConfig:
         payload_fov_min_deg=args.fov_deg,
         payload_fov_max_deg=args.fov_deg,
         point_observation_seconds=args.point_observation_seconds,
+        area_task_fraction=args.area_task_fraction,
+        area_observation_seconds=args.area_observation_seconds,
+        area_coverage_threshold=args.area_coverage_threshold,
+        area_coverage_samples=args.area_coverage_samples,
+        area_min_marginal_coverage=args.area_min_marginal_coverage,
+        area_min_cooperative_satellites=args.area_min_cooperative_satellites,
+        area_max_required_strips=args.area_max_required_strips,
+        area_outside_penalty_weight=args.area_outside_penalty_weight,
+        area_redundancy_penalty_weight=args.area_redundancy_penalty_weight,
         optical_min_sun_elevation_deg=args.optical_min_sun_elevation_deg,
         min_task_window=args.min_task_window,
         max_task_window=args.max_task_window,
@@ -377,6 +386,13 @@ def write_tensorboard_scalars(writer: Any, record: dict[str, Any], episode: int)
         "tasks/completed": "completed_tasks",
         "tasks/cooperative_completed": "cooperative_completed_tasks",
         "tasks/priority_completed": "total_priority_completed",
+        "area/completed": "area_completed_tasks",
+        "area/cooperative_completed": "area_cooperative_completed_tasks",
+        "area/mean_coverage": "mean_area_coverage",
+        "area/priority_weighted_coverage": "priority_weighted_area_coverage",
+        "area/strip_count": "area_strip_count",
+        "area/outside_ratio": "area_outside_ratio",
+        "area/redundancy_ratio": "area_redundancy_ratio",
         "constraints/conflicts": "conflicts",
         "constraints/ground_conflicts": "ground_conflicts",
         "constraints/invalid_actions": "invalid_actions",
@@ -432,6 +448,15 @@ def main() -> None:
     parser.add_argument("--min-observation-elevation-deg", type=float, default=3.0)
     parser.add_argument("--step-duration-seconds", type=float, default=30.0)
     parser.add_argument("--point-observation-seconds", type=float, default=5.0)
+    parser.add_argument("--area-task-fraction", type=float, default=0.0)
+    parser.add_argument("--area-observation-seconds", type=float, default=20.0)
+    parser.add_argument("--area-coverage-threshold", type=float, default=0.95)
+    parser.add_argument("--area-coverage-samples", type=int, default=512)
+    parser.add_argument("--area-min-marginal-coverage", type=float, default=0.01)
+    parser.add_argument("--area-min-cooperative-satellites", type=int, default=2)
+    parser.add_argument("--area-max-required-strips", type=int, default=8)
+    parser.add_argument("--area-outside-penalty-weight", type=float, default=1.0)
+    parser.add_argument("--area-redundancy-penalty-weight", type=float, default=0.6)
     parser.add_argument("--fov-deg", type=float, default=45.0)
     parser.add_argument("--max-off-nadir-deg", type=float, default=45.0)
     parser.add_argument("--optical-min-sun-elevation-deg", type=float, default=8.0)
@@ -505,6 +530,15 @@ def main() -> None:
     parser.add_argument("--reward-clip", type=float, default=10.0)
     parser.add_argument("--grad-clip", type=float, default=10.0)
     parser.add_argument("--metrics-every", type=int, default=1)
+    parser.add_argument(
+        "--progress-every-steps",
+        type=int,
+        default=10,
+        help=(
+            "Refresh metrics.json and TensorBoard live/* scalars within long "
+            "episodes every N environment steps."
+        ),
+    )
     parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
@@ -534,6 +568,14 @@ def main() -> None:
         parser.error("--slow-interval must be at least 1")
     if args.slow_intent_dim < 1:
         parser.error("--slow-intent-dim must be at least 1")
+    if not 0.0 <= args.area_task_fraction <= 1.0:
+        parser.error("--area-task-fraction must be within [0, 1]")
+    if not 0.0 < args.area_coverage_threshold <= 1.0:
+        parser.error("--area-coverage-threshold must be within (0, 1]")
+    if args.area_coverage_samples < 64:
+        parser.error("--area-coverage-samples must be at least 64")
+    if args.progress_every_steps < 1:
+        parser.error("--progress-every-steps must be at least 1")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -813,6 +855,81 @@ def main() -> None:
                 observations = next_observations
                 total_env_steps += 1
                 total_agent_steps += len(agents)
+                if (
+                    (step_index + 1) % args.progress_every_steps == 0
+                    or done
+                ):
+                    live_summary = env.summary()
+                    live_elapsed = max(1e-6, time.time() - episode_started)
+                    live_record = {
+                        "state": "episode_running" if not done else "rollout_complete",
+                        "episode": episode,
+                        "step_in_episode": step_index + 1,
+                        "max_steps": args.max_steps,
+                        "mean_reward_so_far": raw_episode_reward
+                        / max(1, step_index + 1),
+                        "completed_tasks": live_summary["completed_tasks"],
+                        "cooperative_completed_tasks": live_summary[
+                            "cooperative_completed_tasks"
+                        ],
+                        "total_priority_completed": live_summary[
+                            "total_priority_completed"
+                        ],
+                        "area_completed_tasks": live_summary[
+                            "area_completed_tasks"
+                        ],
+                        "mean_area_coverage": live_summary[
+                            "mean_area_coverage"
+                        ],
+                        "area_outside_ratio": live_summary[
+                            "area_outside_ratio"
+                        ],
+                        "area_redundancy_ratio": live_summary[
+                            "area_redundancy_ratio"
+                        ],
+                        "decision_opportunity_rate": live_summary[
+                            "decision_opportunity_rate"
+                        ],
+                        "task_decision_opportunity_rate": live_summary[
+                            "task_decision_opportunities"
+                        ]
+                        / max(1, (step_index + 1) * len(env.agents)),
+                        "conflicts": live_summary["total_conflicts"],
+                        "invalid_actions": live_summary["total_invalid_actions"],
+                        "window_misses": live_summary["total_window_misses"],
+                        "elapsed_seconds": live_elapsed,
+                        "env_steps_per_second": (step_index + 1) / live_elapsed,
+                        "total_env_steps": total_env_steps,
+                    }
+                    metrics.update(
+                        {
+                            "status": "running",
+                            "updated_at": time.time(),
+                            "total_env_steps": total_env_steps,
+                            "total_agent_steps": total_agent_steps,
+                            "live": live_record,
+                        }
+                    )
+                    atomic_write_json(metrics_path, metrics)
+                    print(
+                        f"[episode {episode:04d}/{args.episodes:04d}] "
+                        f"step={step_index + 1:03d}/{args.max_steps:03d} "
+                        f"completed={live_record['completed_tasks']} "
+                        f"task_opportunity="
+                        f"{live_record['task_decision_opportunity_rate']:.4f} "
+                        f"conflicts={live_record['conflicts']} "
+                        f"invalid={live_record['invalid_actions']}",
+                        flush=True,
+                    )
+                    if writer is not None:
+                        for key, value in live_record.items():
+                            if isinstance(value, (int, float)) and not isinstance(
+                                value, bool
+                            ):
+                                writer.add_scalar(
+                                    f"live/{key}", float(value), total_env_steps
+                                )
+                        writer.flush()
                 if done:
                     break
 
@@ -937,6 +1054,23 @@ def main() -> None:
                 "expired_tasks": summary["expired_tasks"],
                 "total_priority_completed": summary["total_priority_completed"],
                 "mean_observation_quality": summary["mean_observation_quality"],
+                "area_tasks": summary["area_tasks"],
+                "area_completed_tasks": summary["area_completed_tasks"],
+                "area_cooperative_completed_tasks": summary[
+                    "area_cooperative_completed_tasks"
+                ],
+                "mean_area_coverage": summary["mean_area_coverage"],
+                "priority_weighted_area_coverage": summary[
+                    "priority_weighted_area_coverage"
+                ],
+                "area_strip_count": summary["area_strip_count"],
+                "area_inside_imaged_km2": summary["area_inside_imaged_km2"],
+                "area_outside_imaged_km2": summary["area_outside_imaged_km2"],
+                "area_redundant_imaged_km2": summary[
+                    "area_redundant_imaged_km2"
+                ],
+                "area_outside_ratio": summary["area_outside_ratio"],
+                "area_redundancy_ratio": summary["area_redundancy_ratio"],
                 "conflicts": summary["total_conflicts"],
                 "ground_conflicts": summary["total_ground_conflicts"],
                 "invalid_actions": summary["total_invalid_actions"],
@@ -971,6 +1105,13 @@ def main() -> None:
                     "total_agent_steps": total_agent_steps,
                     "last": record,
                     "history": history,
+                    "live": {
+                        "state": "episode_complete",
+                        "episode": episode,
+                        "step_in_episode": episode_steps,
+                        "max_steps": args.max_steps,
+                        "total_env_steps": total_env_steps,
+                    },
                 }
             )
             if episode % args.metrics_every == 0:
