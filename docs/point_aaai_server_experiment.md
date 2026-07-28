@@ -48,7 +48,7 @@ Verify both A6000 devices and ports:
 
 ```bash
 nvidia-smi
-ss -lntp | grep -E ':6010|:8766' || true
+ss -lntp | grep -E ':6010|:8770' || true
 ```
 
 ## Run the paper-critical suite
@@ -67,7 +67,7 @@ GPU_IDS="0,1" \
 EPISODES=300 \
 EVAL_EPISODES=20 \
 TENSORBOARD_PORT=6010 \
-DASHBOARD_PORT=8766 \
+DASHBOARD_PORT=8770 \
 RESUME=1 \
 bash scripts/start_point_aaai_server.sh
 ```
@@ -115,14 +115,14 @@ Create SSH tunnels from the local computer:
 
 ```bash
 ssh -N \
-  -L 8766:127.0.0.1:8766 \
+  -L 8770:127.0.0.1:8770 \
   -L 6010:127.0.0.1:6010 \
   USER@SERVER
 ```
 
 Then open:
 
-- HTML: `http://127.0.0.1:8766/web/fast_slow.html?run=/runs/point_aaai_final`
+- HTML: `http://127.0.0.1:8770/web/fast_slow.html?run=/runs/point_aaai_final`
 - TensorBoard: `http://127.0.0.1:6010`
 
 Useful terminal checks:
