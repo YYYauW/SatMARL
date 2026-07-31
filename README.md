@@ -111,6 +111,25 @@ python scripts/train_oasis.py \
   --device cuda
 ```
 
+### Thousand-satellite coalition extension
+
+The `hierarchical_coalition_graph` policy adds versioned reserve/commit leases
+for asynchronous coalition formation, exact messages for strong shared-task
+relations, plane/region mean fields for weak interactions, and a task-factor
+pooled critic. With `candidate_k=24`, `neighbor_k=6`, and hidden width 128, its
+actor input width (790), critic input width (802), and 321,924 trainable
+parameters remain unchanged from 64 through 1,024 satellites.
+
+Launch the 512-satellite training and held-out 512/1,024-satellite evaluation:
+
+```bash
+bash scripts/start_thousand_coalition_training.sh
+```
+
+See `docs/thousand_coalition_server_experiment.md` for two-A6000 multi-seed
+commands, TensorBoard ports, held-out catalogs, the previous OASIS-Graph
+control, and the three mechanism ablations.
+
 Evaluate a checkpoint and export a standard schedule:
 
 ```bash

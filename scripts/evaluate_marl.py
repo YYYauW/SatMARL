@@ -22,7 +22,9 @@ from marl_common import (
     ActorCritic,
     AgentQNetwork,
     FastSlowOpportunityGraphActorCritic,
+    HierarchicalCoalitionActorCritic,
     OpportunityGraphActorCritic,
+    flatten_hierarchical_coalition_all,
     flatten_local_all,
     flatten_opportunity_graph_all,
     resolve_device,
@@ -86,14 +88,36 @@ def build_policy(
         return algo, choose
 
     agents, local, global_state, masks = flatten_local_all(observations)
-    if algo in {"oasis_graph", "oasis_fast_slow_graph"}:
-        graph_agents, graph_local, graph_global, graph_masks = (
-            flatten_opportunity_graph_all(observations)
+    if algo in {
+        "oasis_graph",
+        "oasis_fast_slow_graph",
+        "oasis_hierarchical_coalition_graph",
+    }:
+        hierarchical = algo == "oasis_hierarchical_coalition_graph"
+        flatten_graph = (
+            flatten_hierarchical_coalition_all
+            if hierarchical
+            else flatten_opportunity_graph_all
+        )
+        graph_agents, graph_local, graph_global, graph_masks = flatten_graph(
+            observations
         )
         candidate_k = int(train_args.get("candidate_k", graph_masks.shape[1] - 2))
         neighbor_k = int(train_args.get("neighbor_k", 6))
         fast_slow = algo == "oasis_fast_slow_graph"
-        if fast_slow:
+        if hierarchical:
+            model = HierarchicalCoalitionActorCritic(
+                critic_dim=graph_local.shape[1] + len(graph_global),
+                candidate_k=candidate_k,
+                neighbor_k=neighbor_k,
+                hidden_dim=int(train_args.get("hidden_dim", 256)),
+                activation=str(train_args.get("activation", "relu")),
+                layer_norm=bool(train_args.get("layer_norm", True)),
+                factorized_critic=bool(
+                    train_args.get("factorized_critic", True)
+                ),
+            ).to(device)
+        elif fast_slow:
             initial_slow = slow_strategy_features(
                 graph_local, candidate_k, neighbor_k
             )
@@ -119,6 +143,7 @@ def build_policy(
         model.load_state_dict(checkpoint["model"])
         model.eval()
         factor_messages = bool(train_args.get("graph_factor_messages", True))
+        weak_mean_field = bool(train_args.get("weak_mean_field", True))
         learned_resource_bids = bool(train_args.get("learned_resource_bids", True))
         slow_interval = max(1, int(train_args.get("slow_interval", 8)))
         slow_snapshot: np.ndarray | None = None
@@ -126,12 +151,19 @@ def build_policy(
 
         def choose_graph(current: dict) -> dict[str, int | dict[str, float | int]]:
             nonlocal slow_snapshot, policy_step
-            current_agents, current_local, _, current_masks = (
-                flatten_opportunity_graph_all(current)
-            )
+            current_agents, current_local, _, current_masks = flatten_graph(current)
             if not factor_messages:
                 current_local = current_local.copy()
-                current_local[:, -candidate_k * 4 :] = 0.0
+                factor_stop = -12 if hierarchical else None
+                factor_start = (
+                    factor_stop - candidate_k * 4
+                    if factor_stop is not None
+                    else -candidate_k * 4
+                )
+                current_local[:, factor_start:factor_stop] = 0.0
+            if hierarchical and not weak_mean_field:
+                current_local = current_local.copy()
+                current_local[:, -12:] = 0.0
             if fast_slow:
                 if slow_snapshot is None or policy_step % slow_interval == 0:
                     slow_snapshot = slow_strategy_features(
@@ -358,6 +390,14 @@ def main() -> None:
         "area_redundant_imaged_km2",
         "area_outside_ratio",
         "area_redundancy_ratio",
+        "active_reservations",
+        "reserved_satellites",
+        "reservation_created",
+        "reservation_committed",
+        "reservation_expired",
+        "reservation_member_waste",
+        "reservation_commit_rate",
+        "mean_reservation_fill",
     )
 
     for episode_index in range(eval_episodes):

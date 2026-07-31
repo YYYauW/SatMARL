@@ -1,0 +1,52 @@
+{
+  "experiment": "thousand_satellite_coalition",
+  "method": "hierarchical_coalition_graph",
+  "physics": {
+    "step_duration_seconds": 30,
+    "point_observation_seconds": 5,
+    "max_steps": 240,
+    "fov_deg": 45,
+    "altitude_km": 550,
+    "inclination_deg": 97.6,
+    "eccentricity": 0.001
+  },
+  "training": {
+    "satellites": 512,
+    "planes": 16,
+    "tasks": 24576,
+    "episodes": 300,
+    "seeds": [701, 702, 703]
+  },
+  "evaluation": [
+    {"satellites": 512, "planes": 16, "tasks": 24576, "episodes": 20},
+    {"satellites": 1024, "planes": 32, "tasks": 49152, "episodes": 20}
+  ],
+  "variants": [
+    "full",
+    "oasis_graph",
+    "no_reservation",
+    "no_weak_mean_field",
+    "no_factorized_critic"
+  ],
+  "coordination": {
+    "cooperative_observers_min": 2,
+    "cooperative_observers_max": 5,
+    "reservation_ttl_steps": 2,
+    "candidate_k": 24,
+    "neighbor_k": 6,
+    "strong_interactions": "exact_task_factor_edges",
+    "weak_interactions": "plane_and_geographic_mean_field",
+    "critic": "task_factor_pool_plus_mean_field_plus_global_summary"
+  },
+  "report": [
+    "completed_tasks",
+    "cooperative_completed_tasks",
+    "reservation_commit_rate",
+    "reservation_member_waste",
+    "decision_opportunity_rate",
+    "conflicts",
+    "invalid_actions",
+    "window_misses",
+    "agent_steps_per_second"
+  ]
+}

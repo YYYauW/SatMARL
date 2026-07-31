@@ -140,9 +140,12 @@ def stratified_sphere(
     rng.shuffle(cells)
     longitude_offset = float(rng.uniform(-180.0, 180.0))
     cosine_limit = math.cos(math.radians(minimum_separation_deg))
+    enforce_separation = minimum_separation_deg > 0.0
     forbidden_vectors = (
         to_unit_vectors(forbidden_points)
-        if forbidden_points is not None and len(forbidden_points)
+        if enforce_separation
+        and forbidden_points is not None
+        and len(forbidden_points)
         else np.empty((0, 3), dtype=np.float64)
     )
     accepted_points: list[tuple[float, float]] = []
@@ -172,7 +175,7 @@ def stratified_sphere(
                 and float(np.max(forbidden_vectors @ vector)) > cosine_limit
             ):
                 continue
-            if accepted_vectors:
+            if enforce_separation and accepted_vectors:
                 existing = np.asarray(accepted_vectors)
                 if float(np.max(existing @ vector)) > cosine_limit:
                     continue
@@ -241,6 +244,8 @@ def build_records(
     min_window_steps: int,
     max_window_steps: int,
     area_fraction: float = 0.0,
+    cooperative_observers_min: int = 2,
+    cooperative_observers_max: int = 2,
 ) -> list[dict[str, Any]]:
     count = len(points)
     modes = balanced_labels(count, MODE_WEIGHTS, rng)
@@ -256,6 +261,20 @@ def build_records(
     cooperation[point_indices] = balanced_labels(
         len(point_indices), COOPERATION_WEIGHTS, rng
     )
+    cooperative_indices = point_indices[
+        cooperation[point_indices] != "single"
+    ]
+    observer_counts = np.ones(count, dtype=np.int32)
+    if len(cooperative_indices):
+        if cooperative_observers_min == cooperative_observers_max:
+            observer_counts[cooperative_indices] = cooperative_observers_min
+        else:
+            observer_counts[cooperative_indices] = balanced_integer_values(
+                len(cooperative_indices),
+                cooperative_observers_min,
+                cooperative_observers_max,
+                rng,
+            )
     area_size_classes = balanced_labels(
         len(area_indices), AREA_SIZE_WEIGHTS, rng
     )
@@ -332,7 +351,7 @@ def build_records(
                 "required_observers": (
                     0
                     if target_type == "area"
-                    else 1 if cooperation_mode == "single" else 2
+                    else int(observer_counts[index])
                 ),
                 "max_coordination_gap_steps": 120,
                 "observation_duration_seconds": (
@@ -463,6 +482,16 @@ def main() -> None:
     parser.add_argument("--max-window-steps", type=int, default=160)
     parser.add_argument("--minimum-separation-deg", type=float, default=0.2)
     parser.add_argument(
+        "--skip-separation-audit",
+        action="store_true",
+        help=(
+            "Skip the quadratic exact angular-separation audit for very large "
+            "catalogs. Exact train/test coordinate overlap is still checked."
+        ),
+    )
+    parser.add_argument("--cooperative-observers-min", type=int, default=2)
+    parser.add_argument("--cooperative-observers-max", type=int, default=2)
+    parser.add_argument(
         "--area-fraction",
         type=float,
         default=0.0,
@@ -494,6 +523,14 @@ def main() -> None:
         parser.error("Training and test seeds must differ.")
     if args.minimum_separation_deg < 0.0:
         parser.error("--minimum-separation-deg must be nonnegative.")
+    if not (
+        2
+        <= args.cooperative_observers_min
+        <= args.cooperative_observers_max
+    ):
+        parser.error(
+            "Require 2 <= cooperative observers min <= cooperative observers max."
+        )
     if not 0.0 <= args.area_fraction <= 1.0:
         parser.error("--area-fraction must be within [0, 1].")
 
@@ -518,6 +555,8 @@ def main() -> None:
         min_window_steps=args.min_window_steps,
         max_window_steps=args.max_window_steps,
         area_fraction=args.area_fraction,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
     )
     test_records = build_records(
         "test",
@@ -527,6 +566,8 @@ def main() -> None:
         min_window_steps=args.min_window_steps,
         max_window_steps=args.max_window_steps,
         area_fraction=args.area_fraction,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
     )
 
     output_dir = args.output_dir.expanduser().resolve()
@@ -572,6 +613,10 @@ def main() -> None:
             "minimum_within_and_cross_split_separation_deg": (
                 args.minimum_separation_deg
             ),
+            "cooperative_observers": [
+                args.cooperative_observers_min,
+                args.cooperative_observers_max,
+            ],
         },
         "parameters": {
             "train_count": args.train_count,
@@ -588,14 +633,25 @@ def main() -> None:
             "exact_coordinate_overlap": len(
                 train_coordinates.intersection(test_coordinates)
             ),
-            "minimum_train_separation_deg": minimum_angular_separation_deg(
-                train_points
+            "minimum_train_separation_deg": (
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(train_points)
             ),
-            "minimum_test_separation_deg": minimum_angular_separation_deg(
-                test_points
+            "minimum_test_separation_deg": (
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(test_points)
             ),
             "minimum_cross_split_separation_deg": (
-                minimum_angular_separation_deg(train_points, test_points)
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(train_points, test_points)
+            ),
+            "separation_audit": (
+                "skipped_for_large_catalog"
+                if args.skip_separation_audit
+                else "exact"
             ),
         },
     }

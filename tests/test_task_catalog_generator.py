@@ -13,6 +13,59 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TaskCatalogGeneratorTest(unittest.TestCase):
+    def test_large_catalog_mode_skips_quadratic_audit_and_varies_coalitions(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "targets"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts" / "generate_task_catalogs.py"),
+                "--output-dir",
+                str(output),
+                "--train-count",
+                "96",
+                "--test-count",
+                "128",
+                "--max-steps",
+                "24",
+                "--min-window-steps",
+                "4",
+                "--max-window-steps",
+                "8",
+                "--minimum-separation-deg",
+                "0",
+                "--skip-separation-audit",
+                "--cooperative-observers-min",
+                "2",
+                "--cooperative-observers-max",
+                "5",
+            ]
+            completed = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest = json.loads(
+                (output / "catalog_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                manifest["split_audit"]["separation_audit"],
+                "skipped_for_large_catalog",
+            )
+            self.assertIsNone(
+                manifest["split_audit"]["minimum_cross_split_separation_deg"]
+            )
+            with (output / "train_requests.csv").open(
+                "r", encoding="utf-8", newline=""
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+            coalition_sizes = {
+                int(row["required_observers"])
+                for row in rows
+                if row["cooperation_mode"] != "single"
+            }
+            self.assertEqual(coalition_sizes, {2, 3, 4, 5})
+
     def test_train_and_test_catalogs_are_balanced_and_disjoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "targets"

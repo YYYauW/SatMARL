@@ -142,6 +142,21 @@ class TaskState:
 
 
 @dataclass(slots=True)
+class TaskReservationState:
+    """Versioned soft lease for an asynchronously formed task coalition."""
+
+    task_id: int
+    version: int
+    created_step: int
+    expires_step: int
+    member_bids: dict[int, float] = field(default_factory=dict)
+
+    @property
+    def member_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self.member_bids))
+
+
+@dataclass(slots=True)
 class GroundStationState:
     station_id: int
     name: str
