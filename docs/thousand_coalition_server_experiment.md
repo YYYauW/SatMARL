@@ -117,9 +117,14 @@ Open:
 Progress and coalition diagnostics are also written to:
 
 ```text
+runs/thousand_coalition_seed*/pipeline.json
 runs/thousand_coalition_seed*/training/full/seed_*/metrics.json
 runs/thousand_coalition_seed*/logs/train_full_seed_*.log
 ```
+
+The HTML dashboard reads `pipeline.json` every five seconds and reports the
+preparing, training, evaluating, complete, or failed stage. TensorBoard reads
+the event files and shows the full curves.
 
 TensorBoard contains the additional groups:
 

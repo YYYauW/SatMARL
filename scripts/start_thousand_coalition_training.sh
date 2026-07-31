@@ -32,6 +32,12 @@ VARIANT="${VARIANT:-full}"
 TRAIN_CACHE="${SCENARIO_ROOT}/kepler_n${TRAIN_SATELLITES}.npz"
 EVAL_CACHE="${SCENARIO_ROOT}/kepler_n${EVAL_SATELLITES}.npz"
 TRAIN_DIR="${RUN_ROOT}/training/${VARIANT}/seed_${SEED}"
+if [[ "${RUN_ROOT}" == "${PROJECT_DIR}"/* ]]; then
+  DASHBOARD_RUN="/${RUN_ROOT#"${PROJECT_DIR}/"}"
+else
+  DASHBOARD_RUN=""
+fi
+METRICS_URL="${DASHBOARD_RUN}/training/${VARIANT}/seed_${SEED}/metrics.json"
 
 ARCHITECTURE="hierarchical_coalition_graph"
 VARIANT_ARGS=(--coalition-reservations --weak-mean-field --factorized-critic)
@@ -59,6 +65,29 @@ esac
 
 cd "${PROJECT_DIR}"
 mkdir -p "${SCENARIO_ROOT}" "${RUN_ROOT}/logs" "${TRAIN_DIR}" "${DATA_DIR}"
+
+update_pipeline() {
+  local status="$1"
+  local stage="$2"
+  local message="$3"
+  python scripts/update_pipeline_status.py \
+    --root "${RUN_ROOT}" \
+    --status "${status}" \
+    --stage "${stage}" \
+    --message "${message}" \
+    --method "${VARIANT}" \
+    --seed "${SEED}" \
+    --metrics-url "${METRICS_URL}" \
+    --tensorboard-url "http://127.0.0.1:${TENSORBOARD_PORT}"
+}
+
+mark_failed() {
+  update_pipeline failed failed \
+    "${VARIANT} stopped; inspect logs and resume from the latest checkpoint." \
+    || true
+}
+trap mark_failed ERR
+update_pipeline running preparing "Preparing catalogs and Kepler caches."
 
 if [[ "${GENERATE_CATALOGS}" == "1" ]] && \
    { [[ ! -f "${TRAIN_CSV}" ]] || [[ ! -f "${EVAL_CSV}" ]]; }; then
@@ -130,8 +159,7 @@ if [[ "${START_MONITORING}" == "1" ]]; then
     >"${RUN_ROOT}/logs/tensorboard.log" 2>&1 &
   MONITOR_PIDS+=("$!")
   trap 'kill "${MONITOR_PIDS[@]}" 2>/dev/null || true' EXIT INT TERM
-  if [[ "${RUN_ROOT}" == "${PROJECT_DIR}"/* ]]; then
-    DASHBOARD_RUN="/${RUN_ROOT#"${PROJECT_DIR}/"}"
+  if [[ -n "${DASHBOARD_RUN}" ]]; then
     echo "Dashboard:   http://127.0.0.1:${DASHBOARD_PORT}/web/fast_slow.html?run=${DASHBOARD_RUN}"
   else
     echo "Dashboard root is outside the project tree; use TensorBoard and metrics.json."
@@ -176,9 +204,13 @@ if [[ "${RESUME}" == "1" ]]; then
   TRAIN_ARGS+=(--resume)
 fi
 
+update_pipeline running training \
+  "Training ${VARIANT} on ${TRAIN_SATELLITES} satellites."
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -u scripts/train_oasis.py \
   "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${RUN_ROOT}/logs/train_${VARIANT}_seed_${SEED}.log"
 
+update_pipeline running evaluating \
+  "Evaluating held-out tasks at ${TRAIN_SATELLITES} and ${EVAL_SATELLITES} satellites."
 CUDA_VISIBLE_DEVICES="${GPU_ID}" python -u scripts/evaluate_marl.py \
   --checkpoint "${TRAIN_DIR}/checkpoints/latest.pt" \
   --output "${TRAIN_DIR}/evaluation_n${TRAIN_SATELLITES}.json" \
@@ -215,4 +247,6 @@ CUDA_VISIBLE_DEVICES="${GPU_ID}" python -u scripts/evaluate_marl.py \
   --device "${DEVICE}" \
   2>&1 | tee "${RUN_ROOT}/logs/eval_${VARIANT}_n${EVAL_SATELLITES}_seed_${SEED}.log"
 
+update_pipeline complete complete \
+  "${VARIANT} training and both held-out evaluations are complete."
 echo "${VARIANT} training and 512/1024-satellite evaluations are complete."
