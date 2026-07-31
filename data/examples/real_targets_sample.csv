@@ -1,0 +1,9 @@
+target_id,target_name,latitude_deg,longitude_deg,priority,release_step,deadline_step,required_mode,required_resolution_m,required_swath_km,min_sun_elevation_deg,cooperation_mode,required_observers
+beijing,Beijing,39.9042,116.4074,9,0,239,optical,5,20,8,single,1
+shanghai,Shanghai,31.2304,121.4737,8,0,239,sar,12,40,-90,sequential,2
+shenzhen,Shenzhen,22.5431,114.0579,7,0,239,optical,6,25,8,single,1
+kashgar,Kashgar,39.4704,75.9898,8,0,239,sar,15,50,-90,single,1
+sanya,Sanya,18.2528,109.5119,6,0,239,optical,8,30,8,simultaneous,2
+kiruna,Kiruna,67.8558,20.2253,7,0,239,infrared,25,60,-90,single,1
+perth,Perth,-31.9523,115.8613,5,0,239,optical,8,35,8,single,1
+santiago,Santiago,-33.4489,-70.6693,6,0,239,sar,18,70,-90,sequential,2

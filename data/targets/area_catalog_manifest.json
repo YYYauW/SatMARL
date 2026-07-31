@@ -1,0 +1,174 @@
+{
+  "format": "satmarl-task-catalog-v1",
+  "created_at_utc": "2026-07-25T07:35:08.262722Z",
+  "design": {
+    "spatial_sampling": "one jittered point per equal-area sin(latitude)-longitude cell",
+    "orbit_aligned": false,
+    "geographic_demand_model": "global synthetic benchmark",
+    "mode_weights": {
+      "optical": 0.6,
+      "sar": 0.3,
+      "infrared": 0.1
+    },
+    "cooperation_weights": {
+      "single": 0.7,
+      "sequential": 0.2,
+      "simultaneous": 0.1
+    },
+    "area_fraction": 0.75,
+    "area_size_weights": {
+      "small": 0.3333333333333333,
+      "medium": 0.3333333333333333,
+      "large": 0.3333333333333333
+    },
+    "area_size_ranges_km": {
+      "small": [
+        12.0,
+        50.0
+      ],
+      "medium": [
+        50.0,
+        140.0
+      ],
+      "large": [
+        140.0,
+        300.0
+      ]
+    },
+    "area_collaboration": "derived at reset from target dimensions, payload swath, observation duration, resolution, and compatible satellites",
+    "priority_design": "balanced integer quotas from 1 through 10",
+    "window_design": "stratified uniform [40, 160] steps",
+    "minimum_within_and_cross_split_separation_deg": 0.2
+  },
+  "parameters": {
+    "train_count": 3072,
+    "test_count": 3072,
+    "train_seed": 3701,
+    "test_seed": 3702,
+    "max_steps": 240,
+    "train_equal_area_grid": [
+      48,
+      64
+    ],
+    "test_equal_area_grid": [
+      48,
+      64
+    ]
+  },
+  "train": {
+    "rows": 3072,
+    "unique_target_ids": 3072,
+    "unique_coordinates": 3072,
+    "mode_counts": {
+      "infrared": 307,
+      "optical": 1843,
+      "sar": 922
+    },
+    "cooperation_counts": {
+      "auto": 2304,
+      "sequential": 154,
+      "simultaneous": 77,
+      "single": 537
+    },
+    "target_type_counts": {
+      "area": 2304,
+      "point": 768
+    },
+    "area_size_counts": {
+      "large": 768,
+      "medium": 768,
+      "small": 768
+    },
+    "priority_counts": {
+      "1": 308,
+      "2": 308,
+      "3": 307,
+      "4": 307,
+      "5": 307,
+      "6": 307,
+      "7": 307,
+      "8": 307,
+      "9": 307,
+      "10": 307
+    },
+    "spatial": {
+      "mean_sin_latitude": -0.0003977447242712138,
+      "std_sin_latitude": 0.5775044901837669,
+      "north_fraction": 0.5,
+      "longitude_resultant_length": 0.0007974554610674733
+    },
+    "time_windows": {
+      "release_min": 0,
+      "release_max": 197,
+      "window_min": 40,
+      "window_max": 160,
+      "window_mean": 99.99934895833333
+    }
+  },
+  "test": {
+    "rows": 3072,
+    "unique_target_ids": 3072,
+    "unique_coordinates": 3072,
+    "mode_counts": {
+      "infrared": 307,
+      "optical": 1843,
+      "sar": 922
+    },
+    "cooperation_counts": {
+      "auto": 2304,
+      "sequential": 154,
+      "simultaneous": 77,
+      "single": 537
+    },
+    "target_type_counts": {
+      "area": 2304,
+      "point": 768
+    },
+    "area_size_counts": {
+      "large": 768,
+      "medium": 768,
+      "small": 768
+    },
+    "priority_counts": {
+      "1": 308,
+      "2": 308,
+      "3": 307,
+      "4": 307,
+      "5": 307,
+      "6": 307,
+      "7": 307,
+      "8": 307,
+      "9": 307,
+      "10": 307
+    },
+    "spatial": {
+      "mean_sin_latitude": 0.0006137523749441485,
+      "std_sin_latitude": 0.5775370866984206,
+      "north_fraction": 0.5,
+      "longitude_resultant_length": 0.00031593332588697324
+    },
+    "time_windows": {
+      "release_min": 0,
+      "release_max": 195,
+      "window_min": 40,
+      "window_max": 160,
+      "window_mean": 99.99772135416667
+    }
+  },
+  "split_audit": {
+    "exact_coordinate_overlap": 0,
+    "minimum_train_separation_deg": 0.21287293986151282,
+    "minimum_test_separation_deg": 0.2204735951145662,
+    "minimum_cross_split_separation_deg": 0.20420234374881766
+  },
+  "files": {
+    "train": {
+      "path": "area_train_requests.csv",
+      "sha256": "1a36277f46874ffa860b247120f0c0c54bb01c40dfa805d4372075479f32493f"
+    },
+    "test": {
+      "path": "area_test_requests.csv",
+      "sha256": "c0143c2b295da6b5ce503aace021bf3cf36147be1a2acd0fe5758d417e05bc8d"
+    }
+  }
+}

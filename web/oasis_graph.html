@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OASIS-Graph AAAI 实验记录</title>
+  <style>
+    :root{color-scheme:dark;--bg:#071018;--p:#101d29;--line:#2b4355;--txt:#edf7fb;--muted:#98adbc;--cyan:#54d6c8;--gold:#f2c05c;--red:#f18484}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 90% 0,#123750,transparent 32%),var(--bg);color:var(--txt);font:14px/1.55 Inter,"Microsoft YaHei",sans-serif}
+    header,main{width:min(1450px,calc(100% - 30px));margin:auto}header{padding:28px 0 16px;display:flex;justify-content:space-between;gap:20px;align-items:end}h1{margin:0;font-size:28px}h1 span{color:var(--cyan)}.muted{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.panel{background:#101d29e8;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}.metric b{display:block;font-size:24px;margin-top:5px}.label{font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}.wide{grid-column:span 2}.status{color:var(--gold)}.status.complete{color:var(--cyan)}.status.failed{color:var(--red)}
+    .flow{display:flex;gap:8px;flex-wrap:wrap}.chip{border:1px solid var(--line);border-radius:99px;padding:6px 10px;color:var(--muted)}.chip.active{border-color:var(--cyan);color:var(--cyan)}
+    .scroll{overflow:auto;max-height:520px}table{border-collapse:collapse;width:100%;min-width:1100px}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums}th:first-child,td:first-child{text-align:left}th{color:var(--muted);font-size:11px}.log{font:12px/1.6 Consolas,monospace;white-space:pre-wrap;color:#bfd0dc;max-height:320px;overflow:auto}a{color:var(--cyan)}
+    @media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}.wide{grid-column:span 2}header{align-items:start;flex-direction:column}}
+  </style>
+</head>
+<body><header><div><div class="label">AAAI reproducible experiment</div><h1><span>OASIS-Graph</span> 大规模卫星任务规划</h1><div class="muted">64 星训练；128/256 星零样本泛化；5 秒观测、240 步、45° FOV 固定不变</div></div><div id="status" class="status">读取中…</div></header>
+<main>
+  <section class="grid">
+    <div class="panel metric"><span class="label">阶段</span><b id="stage">—</b></div>
+    <div class="panel metric"><span class="label">主训练</span><b id="episode">—</b></div>
+    <div class="panel metric"><span class="label">机会率</span><b id="rate">—</b></div>
+    <div class="panel metric"><span class="label">已完成任务</span><b id="tasks">—</b></div>
+    <div class="panel wide"><div class="label">当前动作</div><div id="message">—</div></div>
+    <div class="panel wide"><div class="label">论文级对照设计</div><div>Full graph；无任务因子消息；无学习型出价；同预算 MLP-OASIS；IPPO/MAPPO/QMIX/PS-DQN 跨规模迁移。训练尺度不同的行会明确标记，不混作公平同尺度结论。</div></div>
+  </section>
+  <section class="panel"><div class="label">流水线</div><div id="flow" class="flow"></div></section>
+  <section class="panel"><div class="label">独立测试结果</div><div class="scroll"><table><thead><tr><th>方法</th><th>卫星/任务</th><th>测试回合</th><th>回报</th><th>完成任务</th><th>优先级收益</th><th>协同任务</th><th>任务机会率</th><th>可避免等待</th><th>冲突</th><th>非法动作</th></tr></thead><tbody id="rows"><tr><td colspan="11">训练结束后自动填充</td></tr></tbody></table></div></section>
+  <section class="panel"><div class="label">可复现产物</div><p><a href="/runs/oasis_graph_aaai/pipeline.json">pipeline.json</a> · <a href="/runs/oasis_graph_aaai/results.json">results.json</a> · <a href="/runs/oasis_graph_aaai/results.csv">results.csv</a> · 每个评估目录均含标准 <code>schedule.csv</code>。</p><div id="logs" class="log"></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id), get=async u=>{try{const r=await fetch(u,{cache:'no-store'});return r.ok?await r.json():null}catch{return null}}, f=(v,d=2)=>Number.isFinite(+v)?(+v).toFixed(d):'—';
+async function refresh(){const [p,m,r]=await Promise.all([get('/runs/oasis_graph_aaai/pipeline.json'),get('/runs/oasis_graph_aaai/graph/metrics.json'),get('/runs/oasis_graph_aaai/results.json')]);
+ if(p){$('status').textContent=p.status;$('status').className='status '+p.status;$('stage').textContent=p.stage||'—';$('message').textContent=p.message||'—';$('flow').innerHTML=(p.stages||[]).slice(-18).map(x=>`<span class="chip ${x.status==='running'?'active':''}">${x.name}: ${x.status}</span>`).join('');$('logs').textContent=(p.stages||[]).slice(-8).map(x=>`${x.name}\n${x.command||x.artifact||''}`).join('\n\n')}
+ if(m){$('episode').textContent=`${m.episode||0}/${m.args?.episodes||'—'}`;$('rate').textContent=f(100*(m.last?.task_decision_opportunity_rate),1)+'%';$('tasks').textContent=f(m.last?.completed_tasks,0)}
+ if(r?.rows?.length){$('rows').innerHTML=r.rows.map(x=>`<tr><td>${x.method}</td><td>${x.satellites}/${x.tasks}</td><td>${x.eval_episodes}</td><td>${f(x.mean_episode_reward,4)} ± ${f(x.mean_episode_reward_std,4)}</td><td>${f(x.completed_tasks)} ± ${f(x.completed_tasks_std)}</td><td>${f(x.total_priority_completed)} ± ${f(x.total_priority_completed_std)}</td><td>${f(x.cooperative_completed_tasks)}</td><td>${f(100*x.task_decision_opportunity_rate,2)}%</td><td>${f(x.avoidable_idle_actions)}</td><td>${f(x.total_conflicts)}</td><td>${f(x.total_invalid_actions)}</td></tr>`).join('')}
+}
+refresh();setInterval(refresh,5000);
+</script></body></html>

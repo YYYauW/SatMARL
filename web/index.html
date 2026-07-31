@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Satellite MARL Board</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111418;
+      --panel: #1a1f26;
+      --panel-2: #202833;
+      --text: #edf2f7;
+      --muted: #9aa7b6;
+      --line: #334155;
+      --accent: #3dd6a3;
+      --warn: #f8c14a;
+      --bad: #ff6b6b;
+      --info: #64b5f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #151a20;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 12px currentColor;
+    }
+    .dot.running { color: var(--accent); background: var(--accent); }
+    .dot.failed { color: var(--bad); background: var(--bad); }
+    main {
+      width: min(1480px, calc(100vw - 32px));
+      margin: 20px auto 32px;
+      display: grid;
+      gap: 16px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(120px, 1fr));
+      gap: 12px;
+    }
+    .card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .card {
+      padding: 14px 14px 12px;
+      min-height: 82px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .value {
+      font-size: clamp(19px, 2vw, 28px);
+      font-weight: 720;
+      line-height: 1.15;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.7fr 1fr;
+      gap: 16px;
+    }
+    .parameter-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .table-scroll {
+      max-height: 440px;
+      overflow: auto;
+      border-top: 1px solid var(--line);
+    }
+    .wide-table { overflow-x: auto; }
+    .table-scroll th {
+      width: 52%;
+    }
+    .panel {
+      padding: 16px;
+      min-width: 0;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      color: #d9e2ec;
+      letter-spacing: 0;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 330px;
+      background: var(--panel-2);
+      border-radius: 6px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 8px 6px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    td {
+      color: #dbe5f0;
+      overflow-wrap: anywhere;
+    }
+    .mono { font-family: Consolas, "SFMono-Regular", monospace; }
+    .muted { color: var(--muted); }
+    .error {
+      color: var(--bad);
+      padding: 12px;
+      border: 1px solid rgba(255, 107, 107, 0.5);
+      border-radius: 8px;
+      background: rgba(255, 107, 107, 0.08);
+      display: none;
+    }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+      .two-col, .parameter-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      header { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      main { width: min(100vw - 20px, 1480px); }
+      canvas { height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Satellite MARL Training Board</h1>
+    <div class="status">
+      <span id="statusDot" class="dot"></span>
+      <span id="statusText">waiting for metrics</span>
+      <span id="updatedAt" class="muted"></span>
+    </div>
+  </header>
+  <main>
+    <div id="error" class="error"></div>
+    <section class="grid">
+      <div class="card"><div class="label">Episode</div><div id="episode" class="value">-</div></div>
+      <div class="card"><div class="label">Env Steps</div><div id="envSteps" class="value">-</div></div>
+      <div class="card"><div class="label">Agent Steps</div><div id="agentSteps" class="value">-</div></div>
+      <div class="card"><div class="label">Completed</div><div id="completed" class="value">-</div></div>
+      <div class="card"><div class="label">Priority</div><div id="priority" class="value">-</div></div>
+      <div class="card"><div class="label">Mean Reward</div><div id="reward" class="value">-</div></div>
+      <div class="card"><div class="label">Conflicts</div><div id="conflicts" class="value">-</div></div>
+      <div class="card"><div class="label">Invalid</div><div id="invalid" class="value">-</div></div>
+      <div class="card"><div class="label">Window Miss</div><div id="miss" class="value">-</div></div>
+      <div class="card"><div class="label">Busy Sats</div><div id="busy" class="value">-</div></div>
+      <div class="card"><div class="label">Epsilon</div><div id="epsilon" class="value">-</div></div>
+      <div class="card"><div class="label">Loss</div><div id="loss" class="value">-</div></div>
+      <div class="card"><div class="label">Coop Done</div><div id="coopDone" class="value">-</div></div>
+      <div class="card"><div class="label">Image Quality</div><div id="quality" class="value">-</div></div>
+      <div class="card"><div class="label">Ground Conflicts</div><div id="groundConflicts" class="value">-</div></div>
+      <div class="card"><div class="label">Pending Data MB</div><div id="pendingData" class="value">-</div></div>
+      <div class="card"><div class="label">Downlinked MB</div><div id="downlinkedData" class="value">-</div></div>
+      <div class="card"><div class="label">Agent Steps/s</div><div id="throughput" class="value">-</div></div>
+    </section>
+
+    <section class="two-col">
+      <div class="panel">
+        <h2>Training Curves</h2>
+        <canvas id="chart" width="1100" height="330"></canvas>
+      </div>
+      <div class="panel">
+        <h2>Run Info</h2>
+        <table>
+          <tbody id="runInfo"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="parameter-grid">
+      <div class="panel">
+        <h2>MARL &amp; Training Parameters</h2>
+        <div class="table-scroll"><table><tbody id="trainingParams"></tbody></table></div>
+      </div>
+      <div class="panel">
+        <h2>Environment Parameters</h2>
+        <div class="table-scroll"><table><tbody id="environmentParams"></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Latest Episodes</h2>
+      <div class="wide-table"><table>
+        <thead>
+          <tr>
+            <th>Ep</th>
+            <th>Done</th>
+            <th>Coop</th>
+            <th>Expired</th>
+            <th>Reward</th>
+            <th>Quality</th>
+            <th>Conflicts</th>
+            <th>Ground</th>
+            <th>Invalid</th>
+            <th>Window</th>
+            <th>Loss</th>
+            <th>Agent/s</th>
+          </tr>
+        </thead>
+        <tbody id="episodeRows"></tbody>
+      </table></div>
+    </section>
+  </main>
+  <script>
+    const ids = {
+      episode: document.getElementById("episode"),
+      envSteps: document.getElementById("envSteps"),
+      agentSteps: document.getElementById("agentSteps"),
+      completed: document.getElementById("completed"),
+      priority: document.getElementById("priority"),
+      reward: document.getElementById("reward"),
+      conflicts: document.getElementById("conflicts"),
+      invalid: document.getElementById("invalid"),
+      miss: document.getElementById("miss"),
+      busy: document.getElementById("busy"),
+      epsilon: document.getElementById("epsilon"),
+      loss: document.getElementById("loss"),
+      coopDone: document.getElementById("coopDone"),
+      quality: document.getElementById("quality"),
+      groundConflicts: document.getElementById("groundConflicts"),
+      pendingData: document.getElementById("pendingData"),
+      downlinkedData: document.getElementById("downlinkedData"),
+      throughput: document.getElementById("throughput"),
+      statusText: document.getElementById("statusText"),
+      statusDot: document.getElementById("statusDot"),
+      updatedAt: document.getElementById("updatedAt"),
+      runInfo: document.getElementById("runInfo"),
+      trainingParams: document.getElementById("trainingParams"),
+      environmentParams: document.getElementById("environmentParams"),
+      episodeRows: document.getElementById("episodeRows"),
+      error: document.getElementById("error"),
+      chart: document.getElementById("chart")
+    };
+
+    const fmt = new Intl.NumberFormat("zh-CN");
+    const short = (v, digits = 2) => Number.isFinite(Number(v)) ? Number(v).toFixed(digits) : "-";
+    const int = v => Number.isFinite(Number(v)) ? fmt.format(Math.round(Number(v))) : "-";
+    const timeText = ts => ts ? new Date(ts * 1000).toLocaleString() : "-";
+
+    function setCard(last, metrics) {
+      ids.episode.textContent = int(metrics.episode);
+      ids.envSteps.textContent = int(metrics.total_env_steps);
+      ids.agentSteps.textContent = int(metrics.total_agent_steps);
+      ids.completed.textContent = int(last.completed_tasks);
+      ids.priority.textContent = short(last.total_priority_completed, 1);
+      ids.reward.textContent = short(last.mean_reward, 3);
+      ids.conflicts.textContent = int(last.conflicts);
+      ids.invalid.textContent = int(last.invalid_actions);
+      ids.miss.textContent = int(last.window_misses);
+      ids.busy.textContent = int(last.busy_satellites);
+      ids.epsilon.textContent = short(last.epsilon, 3);
+      ids.loss.textContent = last.mean_loss == null ? "-" : short(last.mean_loss, 4);
+      ids.coopDone.textContent = int(last.cooperative_completed_tasks);
+      ids.quality.textContent = short(last.mean_observation_quality, 3);
+      ids.groundConflicts.textContent = int(last.ground_conflicts);
+      ids.pendingData.textContent = short(last.pending_data_mb, 1);
+      ids.downlinkedData.textContent = short(last.downlinked_data_mb, 1);
+      ids.throughput.textContent = int(last.agent_steps_per_second);
+      ids.statusText.textContent = metrics.status || "unknown";
+      ids.statusDot.className = `dot ${metrics.status || ""}`;
+      ids.updatedAt.textContent = `updated ${timeText(metrics.updated_at)}`;
+    }
+
+    function renderInfo(metrics) {
+      const cfg = metrics.env_config || {};
+      const args = metrics.args || {};
+      const algorithm = metrics.algorithm || {};
+      const rows = [
+        ["Algorithm", algorithm.name],
+        ["Training Mode", algorithm.training_mode],
+        ["Device", metrics.device],
+        ["Project", metrics.project_root],
+        ["Satellites", cfg.num_satellites],
+        ["Tasks", cfg.num_tasks],
+        ["Max Steps", cfg.max_steps],
+        ["Candidate K", cfg.candidate_k],
+        ["Orbit Altitude", `${cfg.orbit_altitude_min_km}-${cfg.orbit_altitude_max_km} km`],
+        ["Ground Stations", cfg.num_ground_stations],
+        ["Max Off-Nadir", `${cfg.max_off_nadir_deg} deg`],
+        ["Angular Rate", `${cfg.max_angular_rate_deg_s} deg/s`],
+        ["Angular Accel", `${cfg.max_angular_accel_deg_s2} deg/s2`],
+        ["Task Duration", `${cfg.task_duration_min}-${cfg.task_duration_max}`],
+        ["Episodes Target", args.episodes],
+        ["Replay Size", metrics.replay_size],
+        ["Network Parameters", algorithm.network?.parameter_count],
+        ["Input / Actions", `${metrics.input_dim ?? "-"} / ${metrics.action_dim ?? "-"}`],
+        ["Started", timeText(metrics.started_at)]
+      ];
+      ids.runInfo.innerHTML = rows.map(([k, v]) =>
+        `<tr><th>${k}</th><td class="mono">${v ?? "-"}</td></tr>`
+      ).join("");
+    }
+
+    function flattenObject(value, prefix = "") {
+      const rows = [];
+      if (value == null || typeof value !== "object" || Array.isArray(value)) {
+        rows.push([prefix, Array.isArray(value) ? JSON.stringify(value) : value]);
+        return rows;
+      }
+      Object.entries(value).forEach(([key, item]) => {
+        const path = prefix ? `${prefix}.${key}` : key;
+        if (item != null && typeof item === "object" && !Array.isArray(item)) {
+          rows.push(...flattenObject(item, path));
+        } else {
+          rows.push([path, Array.isArray(item) ? JSON.stringify(item) : item]);
+        }
+      });
+      return rows;
+    }
+
+    function renderParameterRows(target, rows) {
+      target.innerHTML = rows.map(([key, value]) =>
+        `<tr><th>${key}</th><td class="mono">${value ?? "-"}</td></tr>`
+      ).join("");
+    }
+
+    function renderParameters(metrics) {
+      renderParameterRows(ids.trainingParams, [
+        ...flattenObject(metrics.algorithm || {}, "algorithm"),
+        ...flattenObject(metrics.args || {}, "launch")
+      ]);
+      renderParameterRows(
+        ids.environmentParams,
+        flattenObject(metrics.env_config || {}, "environment")
+      );
+    }
+
+    function renderRows(history) {
+      const rows = history.slice(-12).reverse().map(r => `
+        <tr>
+          <td class="mono">${r.episode}</td>
+          <td>${int(r.completed_tasks)}</td>
+          <td>${int(r.cooperative_completed_tasks)}</td>
+          <td>${int(r.expired_tasks)}</td>
+          <td>${short(r.mean_reward, 3)}</td>
+          <td>${short(r.mean_observation_quality, 3)}</td>
+          <td>${int(r.conflicts)}</td>
+          <td>${int(r.ground_conflicts)}</td>
+          <td>${int(r.invalid_actions)}</td>
+          <td>${int(r.window_misses)}</td>
+          <td>${r.mean_loss == null ? "-" : short(r.mean_loss, 4)}</td>
+          <td>${int(r.agent_steps_per_second)}</td>
+        </tr>
+      `);
+      ids.episodeRows.innerHTML = rows.join("");
+    }
+
+    function drawChart(history) {
+      const canvas = ids.chart;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(600, Math.floor(rect.width * dpr));
+      canvas.height = Math.floor(rect.height * dpr);
+      ctx.scale(dpr, dpr);
+      const w = rect.width;
+      const h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#202833";
+      ctx.fillRect(0, 0, w, h);
+      const pad = { left: 48, right: 18, top: 20, bottom: 32 };
+      const plotW = w - pad.left - pad.right;
+      const plotH = h - pad.top - pad.bottom;
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 5; i++) {
+        const y = pad.top + plotH * i / 5;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(w - pad.right, y);
+        ctx.stroke();
+      }
+      if (!history.length) return;
+      const series = [
+        ["completed_tasks", "#3dd6a3", "completed"],
+        ["total_priority_completed", "#64b5f6", "priority"],
+        ["conflicts", "#f8c14a", "conflicts"],
+        ["invalid_actions", "#ff6b6b", "invalid"]
+      ];
+      const values = history.flatMap(r => series.map(([key]) => Number(r[key]) || 0));
+      const maxY = Math.max(1, ...values);
+      const xAt = i => pad.left + (history.length === 1 ? 0 : plotW * i / (history.length - 1));
+      const yAt = v => pad.top + plotH - (Number(v) || 0) / maxY * plotH;
+
+      ctx.font = "12px system-ui";
+      ctx.fillStyle = "#9aa7b6";
+      ctx.fillText(String(Math.round(maxY)), 8, pad.top + 4);
+      ctx.fillText("0", 28, pad.top + plotH);
+
+      series.forEach(([key, color]) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        history.forEach((r, i) => {
+          const x = xAt(i);
+          const y = yAt(r[key]);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+
+      let lx = pad.left;
+      series.forEach(([, color, label]) => {
+        ctx.fillStyle = color;
+        ctx.fillRect(lx, h - 20, 10, 10);
+        ctx.fillStyle = "#dbe5f0";
+        ctx.fillText(label, lx + 15, h - 11);
+        lx += 105;
+      });
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/runs/realistic/metrics.json", { cache: "no-store" });
+        if (!response.ok) throw new Error(`metrics ${response.status}`);
+        const metrics = await response.json();
+        const history = metrics.history || [];
+        const last = metrics.last || history[history.length - 1] || {};
+        ids.error.style.display = "none";
+        setCard(last, metrics);
+        renderInfo(metrics);
+        renderParameters(metrics);
+        renderRows(history);
+        drawChart(history.slice(-160));
+      } catch (error) {
+        ids.error.style.display = "block";
+        ids.error.textContent = `Waiting for training metrics: ${error.message}`;
+      }
+    }
+
+    window.addEventListener("resize", refresh);
+    refresh();
+    setInterval(refresh, 2500);
+  </script>
+</body>
+</html>

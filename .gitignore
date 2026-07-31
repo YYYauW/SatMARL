@@ -1,0 +1,33 @@
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+.env.*
+
+# Training artifacts and checkpoints
+runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+events.out.tfevents.*
+
+# Logs and generated temporary files
+*.log
+*.tmp
+*.pid
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Downloaded publisher kits; retain the project paper sources in docs/aaai27.
+docs/AuthorKit27.zip
+docs/aaai27_author_kit/
