@@ -400,6 +400,7 @@ def main() -> None:
         "mean_reservation_fill",
     )
 
+    benchmark_started = time.perf_counter()
     for episode_index in range(eval_episodes):
         episode_seed = args.seed + episode_index
         env = SatTaskingEnv(config_from_checkpoint(metrics, args))
@@ -468,12 +469,23 @@ def main() -> None:
     final_summary = representative_summary
     frames = representative_frames
     schedule = representative_schedule
+    evaluation_wall_seconds = max(1e-9, time.perf_counter() - benchmark_started)
+    total_env_steps = sum(int(row["episode_steps"]) for row in benchmark_rows)
+    total_agent_steps = total_env_steps * int(env.config.num_satellites)
     benchmark = {
         "episodes": eval_episodes,
         "seed_start": args.seed,
         "seed_end": args.seed + eval_episodes - 1,
         "aggregate": aggregate,
         "episodes_detail": benchmark_rows,
+        "runtime": {
+            "evaluation_wall_seconds": evaluation_wall_seconds,
+            "total_env_steps": total_env_steps,
+            "total_agent_steps": total_agent_steps,
+            "env_steps_per_second": total_env_steps / evaluation_wall_seconds,
+            "agent_steps_per_second": total_agent_steps / evaluation_wall_seconds,
+            "scope": "policy rollout excluding result serialization",
+        },
     }
     created_at = time.time()
     payload = {

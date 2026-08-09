@@ -13,6 +13,64 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class TaskCatalogGeneratorTest(unittest.TestCase):
+    def test_geographic_and_cooperation_profiles_are_declared_and_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "targets"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts" / "generate_task_catalogs.py"),
+                "--output-dir",
+                str(output),
+                "--file-prefix",
+                "stress_",
+                "--train-count",
+                "100",
+                "--test-count",
+                "100",
+                "--max-steps",
+                "24",
+                "--min-window-steps",
+                "3",
+                "--max-window-steps",
+                "8",
+                "--minimum-separation-deg",
+                "0",
+                "--skip-separation-audit",
+                "--spatial-profile",
+                "event_burst",
+                "--event-center-latitude-deg",
+                "31",
+                "--event-center-longitude-deg",
+                "112",
+                "--event-burst-fraction",
+                "0.8",
+                "--single-fraction",
+                "0.5",
+                "--sequential-fraction",
+                "0.3",
+                "--simultaneous-fraction",
+                "0.2",
+            ]
+            completed = subprocess.run(
+                command, capture_output=True, text=True, check=False
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            manifest = json.loads(
+                (output / "stress_catalog_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["design"]["geographic_demand_model"], "event_burst")
+            self.assertEqual(
+                manifest["design"]["cooperation_weights"],
+                {"single": 0.5, "sequential": 0.3, "simultaneous": 0.2},
+            )
+            self.assertEqual(
+                manifest["test"]["cooperation_counts"],
+                {"sequential": 30, "simultaneous": 20, "single": 50},
+            )
+            self.assertEqual(manifest["split_audit"]["exact_coordinate_overlap"], 0)
+
     def test_large_catalog_mode_skips_quadratic_audit_and_varies_coalitions(
         self,
     ) -> None:

@@ -120,15 +120,20 @@ pooled critic. With `candidate_k=24`, `neighbor_k=6`, and hidden width 128, its
 actor input width (790), critic input width (802), and 321,924 trainable
 parameters remain unchanged from 64 through 1,024 satellites.
 
-Launch the 512-satellite training and held-out 512/1,024-satellite evaluation:
+Launch the complete paper experiment matrix on two GPUs:
 
 ```bash
-bash scripts/start_thousand_coalition_training.sh
+GPU_IDS=0,1 bash scripts/start_thousand_paper_suite.sh
 ```
 
-See `docs/thousand_coalition_server_experiment.md` for two-A6000 multi-seed
-commands, TensorBoard ports, held-out catalogs, the previous OASIS-Graph
-control, and the three mechanism ablations.
+The suite trains on 512 satellites, evaluates 128/256/512/1,024 satellites,
+and includes MLP opportunity, IPPO, MAPPO, QMIX, PS-DQN, the previous
+OASIS-Graph control, and five mechanism ablations. It also evaluates task
+density, cooperation demand, and geographic EO-demand shifts with paired
+held-out seeds. See `docs/thousand_paper_suite.md` for the recommended staged
+schedule, resume commands, TensorBoard/dashboard access, result files, and the
+evidence boundary. The older single-method launcher remains documented in
+`docs/thousand_coalition_server_experiment.md`.
 
 Evaluate a checkpoint and export a standard schedule:
 
