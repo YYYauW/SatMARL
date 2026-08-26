@@ -33,7 +33,10 @@ mask, and paired evaluation seeds are used for:
 - `mlp_opportunity`: same opportunity-learning loop with an MLP policy.
 - `ippo`, `mappo`, `qmix`, `ps_dqn`: reinforcement-learning baselines.
 - `no_reservation`, `no_weak_mean_field`, `no_factorized_critic`,
-  `no_duration_correction`, `no_opportunity_balance`: causal ablations.
+  `no_duration_correction`, `no_opportunity_balance`, `no_factor_messages`,
+  `no_learned_bids`: causal ablations. The last two independently remove the
+  task-factor coordination messages and the learned contention bid while
+  retaining the hierarchical coalition architecture.
 
 The stress suite tests three axes at 1,024 satellites: global/clustered/event
 geography, 0/10/30/50 percent cooperative demand, and 12,288/24,576/49,152
@@ -77,8 +80,10 @@ Do not start the formal suite until the smoke suite reports `status=complete`.
 
 ## Recommended two-A6000 schedule
 
-Use one job per GPU. The launcher assigns queued jobs to GPU 0 and GPU 1 and
-records every exact command in `command_plan_*.json`.
+Use one job per GPU by default. The launcher assigns queued jobs to GPU 0 and
+GPU 1 and records every exact command in `command_plan_*.json`. Values above
+one for `resources.jobs_per_gpu` use distinct logical worker slots on each
+physical GPU; use them only after checking host-memory and simulator throughput.
 
 ### 1. Prepare shared scenarios and catalogs
 
@@ -107,7 +112,7 @@ from `checkpoints/latest.pt`.
 
 ```bash
 START_MONITORING=0 STAGE=train GPU_IDS=0,1 \
-METHODS=no_reservation,no_weak_mean_field,no_factorized_critic,no_duration_correction,no_opportunity_balance \
+METHODS=no_reservation,no_weak_mean_field,no_factorized_critic,no_duration_correction,no_opportunity_balance,no_factor_messages,no_learned_bids \
 RUN_ROOT="$PWD/runs/thousand_paper_suite" \
 SCENARIO_ROOT="$PWD/runs/thousand_paper_shared/scenario" \
 bash scripts/start_thousand_paper_suite.sh

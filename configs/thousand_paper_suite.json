@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "experiment": "thousand_satellite_eo_paper_suite",
   "description": "Same-budget 512-satellite training, held-out 512/1024 evaluation, mechanism ablations, sparse-opportunity stress, coalition stress, and geographic EO-demand shifts.",
   "resources": {
@@ -56,7 +56,9 @@
     "no_weak_mean_field": {"trainer": "oasis", "group": "ablation"},
     "no_factorized_critic": {"trainer": "oasis", "group": "ablation"},
     "no_duration_correction": {"trainer": "oasis", "group": "ablation"},
-    "no_opportunity_balance": {"trainer": "oasis", "group": "ablation"}
+    "no_opportunity_balance": {"trainer": "oasis", "group": "ablation"},
+    "no_factor_messages": {"trainer": "oasis", "group": "ablation"},
+    "no_learned_bids": {"trainer": "oasis", "group": "ablation"}
   },
   "catalog": {
     "train_seed": 4701,

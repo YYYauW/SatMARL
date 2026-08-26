@@ -41,7 +41,10 @@ class ThousandPaperSuiteTest(unittest.TestCase):
             data_root=root / "catalogs",
             profile="smoke",
             stage="all",
-            methods="full,mlp_opportunity,ippo,mappo,qmix,ps_dqn,no_reservation",
+            methods=(
+                "full,mlp_opportunity,ippo,mappo,qmix,ps_dqn,no_reservation,"
+                "no_factor_messages,no_learned_bids"
+            ),
             seeds="701",
             gpus="0,1",
             resume=True,
@@ -73,12 +76,29 @@ class ThousandPaperSuiteTest(unittest.TestCase):
             self.assertIn("--no-opportunity-balancing", no_balance)
             self.assertIn("--no-semantic-opportunity-balancing", no_balance)
             self.assertNotIn("--semantic-opportunity-balancing", no_balance)
+            no_factors = commands["train:no_factor_messages:seed701"]
+            self.assertIn("--no-graph-factor-messages", no_factors)
+            self.assertNotIn("--no-learned-resource-bids", no_factors)
+            no_bids = commands["train:no_learned_bids:seed701"]
+            self.assertIn("--no-learned-resource-bids", no_bids)
+            self.assertNotIn("--no-graph-factor-messages", no_bids)
+
+    def test_multi_job_gpu_slots_are_unique_and_keep_physical_gpu_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = self.suite(temporary)
+            suite.config["resources"]["jobs_per_gpu"] = 2
+            slots = suite.worker_slots()
+            self.assertEqual(
+                slots,
+                [("0:0", "0"), ("0:1", "0"), ("1:0", "1"), ("1:1", "1")],
+            )
+            self.assertEqual(len({slot_id for slot_id, _ in slots}), 4)
 
     def test_smoke_plan_has_two_scales_and_declared_stress_axes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             suite = self.suite(temporary)
             evaluations = suite.evaluation_jobs()
-            self.assertEqual(len(evaluations), 14)
+            self.assertEqual(len(evaluations), 18)
             self.assertEqual(
                 {int(job.markers[0].stem.removeprefix("n")) for job in evaluations},
                 {8, 16},

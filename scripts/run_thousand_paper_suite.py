@@ -426,6 +426,10 @@ class Suite:
             flags.extend(
                 ["--no-opportunity-balancing", "--no-semantic-opportunity-balancing"]
             )
+        elif method == "no_factor_messages":
+            flags.append("--no-graph-factor-messages")
+        elif method == "no_learned_bids":
+            flags.append("--no-learned-resource-bids")
         elif method != "full":
             raise ValueError(f"Unsupported OASIS method: {method}")
         return architecture, flags
@@ -792,6 +796,16 @@ class Suite:
             },
         )
 
+    def worker_slots(self) -> list[tuple[str, str]]:
+        jobs_per_gpu = int(self.config["resources"].get("jobs_per_gpu", 1))
+        if jobs_per_gpu < 1:
+            raise ValueError("resources.jobs_per_gpu must be at least one.")
+        return [
+            (f"{gpu}:{worker_index}", gpu)
+            for gpu in self.gpus
+            for worker_index in range(jobs_per_gpu)
+        ]
+
     def run_jobs(self, jobs: list[Job], stage: str, *, parallel: bool) -> None:
         self.record_plan(jobs, stage)
         pending = [job for job in jobs if not job.is_complete()]
@@ -822,22 +836,18 @@ class Suite:
                 self._run_serial_job(job)
             return
 
-        slots = [
-            gpu
-            for gpu in self.gpus
-            for _ in range(int(self.config["resources"].get("jobs_per_gpu", 1)))
-        ]
+        slots = self.worker_slots()
         active: dict[str, tuple[Job, subprocess.Popen[Any], Any]] = {}
         queue = list(pending)
         failures: list[str] = []
         while queue or active:
-            free_slots = [slot for slot in slots if slot not in active]
+            free_slots = [slot for slot in slots if slot[0] not in active]
             while queue and free_slots:
-                slot = free_slots.pop(0)
+                slot_id, gpu = free_slots.pop(0)
                 job = queue.pop(0)
                 handle = job.log_path.open("a", encoding="utf-8")
                 environment = os.environ.copy()
-                environment["CUDA_VISIBLE_DEVICES"] = slot
+                environment["CUDA_VISIBLE_DEVICES"] = gpu
                 process = subprocess.Popen(
                     job.command,
                     cwd=PROJECT_ROOT,
@@ -845,11 +855,12 @@ class Suite:
                     stdout=handle,
                     stderr=subprocess.STDOUT,
                 )
-                job.gpu = slot
-                active[slot] = (job, process, handle)
+                job.gpu = gpu
+                active[slot_id] = (job, process, handle)
                 self.state["jobs"][job.job_id] = {
                     "status": "running",
-                    "gpu": slot,
+                    "gpu": gpu,
+                    "worker_slot": slot_id,
                     "pid": process.pid,
                     "started_at": time.time(),
                     "command": job.command_text(),
@@ -861,7 +872,7 @@ class Suite:
                     message=f"{len(active)} running, {len(queue)} queued.",
                 )
             finished: list[str] = []
-            for slot, (job, process, handle) in active.items():
+            for slot_id, (job, process, handle) in active.items():
                 return_code = process.poll()
                 if return_code is None:
                     continue
@@ -877,9 +888,9 @@ class Suite:
                 )
                 if not complete:
                     failures.append(job.job_id)
-                finished.append(slot)
-            for slot in finished:
-                active.pop(slot)
+                finished.append(slot_id)
+            for slot_id in finished:
+                active.pop(slot_id)
             if failures and self.args.fail_fast:
                 for _, process, handle in active.values():
                     process.terminate()
