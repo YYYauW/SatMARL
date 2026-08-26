@@ -24,6 +24,7 @@ from .entities import (
     GroundStationState,
     OrbitalElements,
     SatelliteState,
+    TaskReservationState,
     TaskState,
 )
 from .orbital import (
@@ -131,6 +132,13 @@ class SatTaskingEnv:
         self._task_reward_total = 0.0
         self._downlink_reward_total = 0.0
         self._team_reward_total = 0.0
+        self._reservations: dict[int, TaskReservationState] = {}
+        self._satellite_reservations: dict[int, int] = {}
+        self._next_reservation_version = 1
+        self._reservation_created_count = 0
+        self._reservation_committed_count = 0
+        self._reservation_expired_count = 0
+        self._reservation_member_waste = 0
         self._decision_count = 0
         self._decision_opportunities = 0
         self._task_decision_opportunities = 0
@@ -172,6 +180,13 @@ class SatTaskingEnv:
         self._task_reward_total = 0.0
         self._downlink_reward_total = 0.0
         self._team_reward_total = 0.0
+        self._reservations = {}
+        self._satellite_reservations = {}
+        self._next_reservation_version = 1
+        self._reservation_created_count = 0
+        self._reservation_committed_count = 0
+        self._reservation_expired_count = 0
+        self._reservation_member_waste = 0
         self._decision_count = 0
         self._decision_opportunities = 0
         self._task_decision_opportunities = 0
@@ -197,6 +212,7 @@ class SatTaskingEnv:
 
         self._expire_tasks()
         self._expire_collaboration_progress()
+        self._expire_reservations()
         rewards = {agent: 0.0 for agent in self.agents}
         infos: dict[str, dict[str, Any]] = {agent: {} for agent in self.agents}
         claims: dict[int, list[Claim]] = defaultdict(list)
@@ -267,6 +283,17 @@ class SatTaskingEnv:
                 continue
 
             task = self._tasks[task_id]
+            reserved_task_id = self._satellite_reservations.get(sat.sat_id)
+            if reserved_task_id is not None and reserved_task_id != task_id:
+                self._reject_action(
+                    agent,
+                    sat,
+                    rewards,
+                    infos,
+                    "reservation_conflict",
+                    window_miss=False,
+                )
+                continue
             feasible, reason, plan = self._plan_task(sat, task)
             if not feasible:
                 self._reject_action(
@@ -320,6 +347,7 @@ class SatTaskingEnv:
         self._step += 1
         self._expire_tasks()
         self._expire_collaboration_progress()
+        self._expire_reservations(rewards, infos)
 
         terminated = self._all_tasks_finished()
         truncated = self._step >= self.config.max_steps
@@ -451,6 +479,25 @@ class SatTaskingEnv:
             "task_reward_total": float(self._task_reward_total),
             "downlink_reward_total": float(self._downlink_reward_total),
             "team_reward_total": float(self._team_reward_total),
+            "active_reservations": len(self._reservations),
+            "reserved_satellites": len(self._satellite_reservations),
+            "reservation_created": self._reservation_created_count,
+            "reservation_committed": self._reservation_committed_count,
+            "reservation_expired": self._reservation_expired_count,
+            "reservation_member_waste": self._reservation_member_waste,
+            "reservation_commit_rate": self._reservation_committed_count
+            / max(1, self._reservation_created_count),
+            "mean_reservation_fill": float(
+                np.mean(
+                    [
+                        len(reservation.member_bids)
+                        / max(1, self._tasks[task_id].required_observers)
+                        for task_id, reservation in self._reservations.items()
+                    ]
+                )
+            )
+            if self._reservations
+            else 0.0,
             "decision_count": self._decision_count,
             "decision_opportunities": self._decision_opportunities,
             "decision_opportunity_rate": self._decision_opportunities
@@ -1152,7 +1199,8 @@ class SatTaskingEnv:
         padded_ids = np.full(cfg.candidate_k, -1, dtype=np.int32)
         action_mask = np.zeros(cfg.candidate_k + 2, dtype=np.int8)
         action_mask[0] = 1
-        if self._satellite_available(sat):
+        reserved_task_id = self._satellite_reservations.get(sat_idx)
+        if self._satellite_available(sat) and reserved_task_id is None:
             action_mask[1] = int(sat.storage > 1e-8 and bool(self._station_cache[sat_idx]))
 
         for row, task_id in enumerate(candidate_ids[: cfg.candidate_k]):
@@ -1160,7 +1208,10 @@ class SatTaskingEnv:
             padded_ids[row] = task.task_id
             feasible, _, plan = self._plan_task(sat, task)
             candidate_features[row] = self._task_features(sat, task, plan)
-            action_mask[row + 2] = int(feasible)
+            reservation_compatible = (
+                reserved_task_id is None or int(task_id) == reserved_task_id
+            )
+            action_mask[row + 2] = int(feasible and reservation_compatible)
 
         neighbors, action_mean = self._neighbor_features(sat_idx, candidate_cache)
         return {
@@ -1420,7 +1471,35 @@ class SatTaskingEnv:
                 local = local[np.argsort(scores[local])[::-1]]
             else:
                 local = np.argsort(scores)[::-1]
-            cache.append(active_ids[eligible[visible[local]]].astype(np.int32, copy=False))
+            selected_ids = active_ids[eligible[visible[local]]].astype(
+                np.int32, copy=False
+            )
+            reserved_task_id = self._satellite_reservations.get(sat_idx)
+            if (
+                reserved_task_id is not None
+                and reserved_task_id not in selected_ids
+                and self._tasks[reserved_task_id].available
+            ):
+                # Preserve the leased task in the bounded candidate list so a
+                # size-invariant actor can observe reservation progress.
+                selected_ids = np.concatenate(
+                    [np.asarray([reserved_task_id], dtype=np.int32), selected_ids]
+                )[: cfg.candidate_k]
+            cache.append(selected_ids)
+        for sat_idx, reserved_task_id in self._satellite_reservations.items():
+            if sat_idx >= len(cache):
+                continue
+            task = self._tasks[reserved_task_id]
+            if not task.available or reserved_task_id in cache[sat_idx]:
+                continue
+            feasible, _, _ = self._plan_task(self._satellites[sat_idx], task)
+            if feasible:
+                cache[sat_idx] = np.concatenate(
+                    [
+                        np.asarray([reserved_task_id], dtype=np.int32),
+                        cache[sat_idx],
+                    ]
+                )[: cfg.candidate_k]
         return cache
 
     def _self_features(self, sat: SatelliteState) -> np.ndarray:
@@ -1464,11 +1543,18 @@ class SatTaskingEnv:
         cfg = self.config
         if plan is None:
             _, _, plan = self._plan_task(sat, task)
-        progress = (
+        observation_progress = (
             task.coverage_fraction
             if task.is_area
             else len(task.observed_by) / max(1, task.required_observers)
         )
+        reservation = self._reservations.get(task.task_id)
+        reservation_progress = (
+            len(reservation.member_bids) / max(1, task.required_observers)
+            if reservation is not None
+            else 0.0
+        )
+        progress = max(observation_progress, reservation_progress)
         return np.asarray(
             [
                 task.priority / cfg.task_priority_max,
@@ -2212,10 +2298,37 @@ class SatTaskingEnv:
                 continue
 
             if task.cooperation_mode == "simultaneous":
-                winners = self._select_simultaneous_group(contenders, task.required_observers)
+                if self.config.coalition_reservations:
+                    self._reserve_claims(task, contenders, infos)
+                    contenders = self._current_reservation_claims(task)
+                winners = self._select_simultaneous_group(
+                    contenders, task.required_observers
+                )
                 if not winners:
-                    for agent, _, _, _ in contenders:
-                        rewards[agent] += self.config.coordination_failure_penalty
+                    current_agents = {
+                        claim[0] for claim in claims.get(task_id, [])
+                    }
+                    for agent in current_agents:
+                        reservation = self._reservations.get(task_id)
+                        if reservation is not None:
+                            infos[agent].update(
+                                {
+                                    "event": "coalition_reserved",
+                                    "task_id": task_id,
+                                    "reservation_version": reservation.version,
+                                    "reserved_members": len(
+                                        reservation.member_bids
+                                    ),
+                                    "required_observers": task.required_observers,
+                                    "reservation_expires_step": (
+                                        reservation.expires_step
+                                    ),
+                                }
+                            )
+                            continue
+                        rewards[agent] += (
+                            self.config.coordination_failure_penalty
+                        )
                         infos[agent].update(
                             {
                                 "event": "coordination_failed",
@@ -2224,6 +2337,9 @@ class SatTaskingEnv:
                             }
                         )
                     continue
+                if self.config.coalition_reservations:
+                    self._reservation_committed_count += 1
+                    self._release_reservation(task_id)
             else:
                 winners = [self._select_winner(contenders)]
 
@@ -2694,6 +2810,106 @@ class SatTaskingEnv:
                 task.observed_by.clear()
                 task.observation_steps.clear()
                 task.observation_qualities.clear()
+
+    def _reserve_claims(
+        self,
+        task: TaskState,
+        contenders: list[Claim],
+        infos: dict[str, dict[str, Any]],
+    ) -> None:
+        """Merge asynchronous proposals into one versioned task lease."""
+
+        reservation = self._reservations.get(task.task_id)
+        if reservation is None:
+            reservation = TaskReservationState(
+                task_id=task.task_id,
+                version=self._next_reservation_version,
+                created_step=self._step,
+                expires_step=self._step + max(1, self.config.reservation_ttl_steps),
+            )
+            self._next_reservation_version += 1
+            self._reservations[task.task_id] = reservation
+            self._reservation_created_count += 1
+
+        for agent, bid, _, _ in contenders:
+            sat_id = self._agent_index(agent)
+            existing_task = self._satellite_reservations.get(sat_id)
+            if existing_task is not None and existing_task != task.task_id:
+                infos[agent].update(
+                    {
+                        "event": "reservation_conflict",
+                        "reserved_task_id": existing_task,
+                    }
+                )
+                continue
+            reservation.member_bids[sat_id] = max(
+                float(bid), reservation.member_bids.get(sat_id, -math.inf)
+            )
+            self._satellite_reservations[sat_id] = task.task_id
+            infos[agent]["reservation_version"] = reservation.version
+
+    def _current_reservation_claims(self, task: TaskState) -> list[Claim]:
+        """Replan leased members at the current physical state."""
+
+        reservation = self._reservations.get(task.task_id)
+        if reservation is None:
+            return []
+        claims: list[Claim] = []
+        for sat_id, bid in reservation.member_bids.items():
+            sat = self._satellites[sat_id]
+            if not self._satellite_available(sat):
+                continue
+            feasible, _, plan = self._plan_task(sat, task)
+            if not feasible:
+                continue
+            claims.append(
+                (
+                    self.possible_agents[sat_id],
+                    float(bid),
+                    float(plan["off_nadir_deg"]),
+                    plan,
+                )
+            )
+        return claims
+
+    def _release_reservation(self, task_id: int) -> TaskReservationState | None:
+        reservation = self._reservations.pop(task_id, None)
+        if reservation is None:
+            return None
+        for sat_id in reservation.member_ids:
+            if self._satellite_reservations.get(sat_id) == task_id:
+                self._satellite_reservations.pop(sat_id, None)
+        return reservation
+
+    def _expire_reservations(
+        self,
+        rewards: dict[str, float] | None = None,
+        infos: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        expired_task_ids = [
+            task_id
+            for task_id, reservation in self._reservations.items()
+            if self._step > reservation.expires_step
+            or not self._tasks[task_id].available
+        ]
+        for task_id in expired_task_ids:
+            reservation = self._release_reservation(task_id)
+            if reservation is None:
+                continue
+            self._reservation_expired_count += 1
+            self._reservation_member_waste += len(reservation.member_bids)
+            if rewards is None or infos is None:
+                continue
+            for sat_id in reservation.member_ids:
+                agent = self.possible_agents[sat_id]
+                rewards[agent] += self.config.reservation_failure_penalty
+                infos[agent].update(
+                    {
+                        "event": "reservation_expired",
+                        "task_id": task_id,
+                        "reservation_version": reservation.version,
+                    }
+                )
 
     def _reject_action(
         self,

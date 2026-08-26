@@ -64,6 +64,8 @@ def make_config(args: argparse.Namespace) -> EnvConfig:
         min_task_window=args.min_task_window,
         max_task_window=args.max_task_window,
         planning_lookahead_steps=args.planning_lookahead_steps,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
     )
 
 
@@ -330,6 +332,8 @@ def main() -> None:
     parser.add_argument("--min-task-window", type=int, default=16)
     parser.add_argument("--max-task-window", type=int, default=48)
     parser.add_argument("--planning-lookahead-steps", type=int, default=12)
+    parser.add_argument("--cooperative-observers-min", type=int, default=2)
+    parser.add_argument("--cooperative-observers-max", type=int, default=2)
     parser.add_argument("--scenario-seed-cycle", type=int, default=0)
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--seed", type=int, default=31)
@@ -358,6 +362,14 @@ def main() -> None:
     parser.add_argument("--stop-file", type=Path, default=None)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     args = parser.parse_args()
+    if not (
+        1
+        <= args.cooperative_observers_min
+        <= args.cooperative_observers_max
+    ):
+        parser.error(
+            "cooperative observer bounds must satisfy 1 <= min <= max"
+        )
     if (args.ephemeris_cache is None) != (args.task_catalog is None):
         parser.error("--ephemeris-cache and --task-catalog must be supplied together")
     if args.task_catalog is not None:

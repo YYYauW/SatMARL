@@ -91,6 +91,60 @@ class SatTaskingEnvBehaviorTest(unittest.TestCase):
         self.assertTrue(any(info.get("completion_bonus", 0.0) > 0.0 for info in infos.values()))
         self.assertGreater(sum(rewards.values()), 0.0)
 
+    def test_two_phase_reservation_commits_asynchronous_coalition(self) -> None:
+        cfg, env, observations = self._coincident_two_satellite_env(
+            "simultaneous"
+        )
+        cfg.coalition_reservations = True
+        cfg.reservation_ttl_steps = 2
+        # Keep the synthetic target feasible for a second decision epoch.  The
+        # test isolates asynchronous proposal/commit semantics; mission runs
+        # retain the 45-degree off-nadir limit.
+        cfg.max_off_nadir_deg = 85.0
+        cfg.max_pitch_deg = 85.0
+        first_action = int(
+            np.flatnonzero(observations["satellite_0"]["action_mask"])[-1]
+        )
+        observations, _, _, _, infos = env.step(
+            {"satellite_0": first_action, "satellite_1": 0}
+        )
+        self.assertIsNone(env.tasks[0].completed_by)
+        self.assertEqual(env.summary()["active_reservations"], 1)
+        self.assertEqual(infos["satellite_0"]["event"], "coalition_reserved")
+        self.assertEqual(int(observations["satellite_0"]["action_mask"][1]), 0)
+
+        second_action = int(
+            np.flatnonzero(observations["satellite_1"]["action_mask"])[-1]
+        )
+        _, _, _, _, _ = env.step(
+            {"satellite_0": 0, "satellite_1": second_action}
+        )
+        summary = env.summary()
+        self.assertEqual(summary["cooperative_completed_tasks"], 1)
+        self.assertEqual(summary["reservation_committed"], 1)
+        self.assertEqual(summary["active_reservations"], 0)
+        self.assertEqual(env.tasks[0].completed_by_satellites, [0, 1])
+
+    def test_incomplete_reservation_expires_and_releases_satellite(self) -> None:
+        cfg, env, observations = self._coincident_two_satellite_env(
+            "simultaneous"
+        )
+        cfg.coalition_reservations = True
+        cfg.reservation_ttl_steps = 1
+        first_action = int(
+            np.flatnonzero(observations["satellite_0"]["action_mask"])[-1]
+        )
+        env.step({"satellite_0": first_action, "satellite_1": 0})
+        env.step({"satellite_0": 0, "satellite_1": 0})
+        observations, _, _, _, _ = env.step(
+            {"satellite_0": 0, "satellite_1": 0}
+        )
+        summary = env.summary()
+        self.assertEqual(summary["active_reservations"], 0)
+        self.assertEqual(summary["reservation_expired"], 1)
+        self.assertEqual(summary["reservation_member_waste"], 1)
+        self.assertNotEqual(int(observations["satellite_0"]["action_mask"][1]), -1)
+
     def test_ground_station_capacity_and_segmented_downlink(self) -> None:
         cfg = EnvConfig(
             num_satellites=2,

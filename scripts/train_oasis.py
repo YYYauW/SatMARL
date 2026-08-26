@@ -22,11 +22,13 @@ if str(SRC) not in sys.path:
 from marl_common import (
     ActorCritic,
     FastSlowOpportunityGraphActorCritic,
+    HierarchicalCoalitionActorCritic,
     OpportunityGraphActorCritic,
     atomic_torch_save,
     atomic_write_json,
     critic_observations,
     flatten_local_all,
+    flatten_hierarchical_coalition_all,
     flatten_opportunity_graph_all,
     masked_logits,
     parameter_count,
@@ -85,6 +87,11 @@ def make_config(args: argparse.Namespace) -> EnvConfig:
         min_task_window=args.min_task_window,
         max_task_window=args.max_task_window,
         planning_lookahead_steps=args.planning_lookahead_steps,
+        coalition_reservations=args.coalition_reservations,
+        reservation_ttl_steps=args.reservation_ttl_steps,
+        reservation_failure_penalty=args.reservation_failure_penalty,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
     )
 
 
@@ -99,7 +106,9 @@ def algorithm_metadata(
     centralized = True
     return {
         "name": (
-            "oasis_fast_slow_graph"
+            "oasis_hierarchical_coalition_graph"
+            if args.architecture == "hierarchical_coalition_graph"
+            else "oasis_fast_slow_graph"
             if args.architecture == "fast_slow_graph"
             else "oasis_graph"
             if args.architecture == "opportunity_graph"
@@ -113,15 +122,30 @@ def algorithm_metadata(
         "action_masking": True,
         "coordination": (
             "learned_task_factor_bids_plus_hard_feasibility"
-            if args.architecture in {"opportunity_graph", "fast_slow_graph"}
+            if args.architecture
+            in {
+                "opportunity_graph",
+                "fast_slow_graph",
+                "hierarchical_coalition_graph",
+            }
             and args.learned_resource_bids
             else "task_factor_policy_plus_environment_tiebreak"
-            if args.architecture in {"opportunity_graph", "fast_slow_graph"}
+            if args.architecture
+            in {
+                "opportunity_graph",
+                "fast_slow_graph",
+                "hierarchical_coalition_graph",
+            }
             else "environment_auction_and_hard_feasibility"
         ),
         "architecture": args.architecture,
         "learned_resource_bids": (
-            args.architecture in {"opportunity_graph", "fast_slow_graph"}
+            args.architecture
+            in {
+                "opportunity_graph",
+                "fast_slow_graph",
+                "hierarchical_coalition_graph",
+            }
             and args.learned_resource_bids
         ),
         "opportunity_graph": {
@@ -130,8 +154,33 @@ def algorithm_metadata(
             "factor_messages": args.graph_factor_messages,
             "complexity": "O(active_satellites * candidate_k)",
             "size_invariant_parameters": args.architecture
-            in {"opportunity_graph", "fast_slow_graph"},
+            in {
+                "opportunity_graph",
+                "fast_slow_graph",
+                "hierarchical_coalition_graph",
+            },
         },
+        "coalition_protocol": {
+            "enabled": args.coalition_reservations,
+            "protocol": "versioned_two_phase_reserve_commit",
+            "reservation_ttl_steps": args.reservation_ttl_steps,
+        },
+        "weak_interactions": {
+            "enabled": (
+                args.architecture == "hierarchical_coalition_graph"
+                and args.weak_mean_field
+            ),
+            "representation": "plane_and_geographic_mean_field",
+            "strong_relations": "exact_sparse_task_factor_edges",
+        },
+        "critic_factorization": (
+            "task_pool_plus_plane_region_mean_field_plus_global_summary"
+            if args.architecture == "hierarchical_coalition_graph"
+            and args.factorized_critic
+            else "flat_fixed_width_critic"
+            if args.architecture == "hierarchical_coalition_graph"
+            else "fixed_width_global_summary"
+        ),
         "temporal_hierarchy": {
             "enabled": args.architecture == "fast_slow_graph",
             "slow_interval_steps": args.slow_interval,
@@ -386,6 +435,14 @@ def write_tensorboard_scalars(writer: Any, record: dict[str, Any], episode: int)
         "tasks/completed": "completed_tasks",
         "tasks/cooperative_completed": "cooperative_completed_tasks",
         "tasks/priority_completed": "total_priority_completed",
+        "coalitions/active_reservations": "active_reservations",
+        "coalitions/reserved_satellites": "reserved_satellites",
+        "coalitions/created": "reservation_created",
+        "coalitions/committed": "reservation_committed",
+        "coalitions/expired": "reservation_expired",
+        "coalitions/member_waste": "reservation_member_waste",
+        "coalitions/commit_rate": "reservation_commit_rate",
+        "coalitions/mean_fill": "mean_reservation_fill",
         "area/completed": "area_completed_tasks",
         "area/cooperative_completed": "area_cooperative_completed_tasks",
         "area/mean_coverage": "mean_area_coverage",
@@ -463,15 +520,42 @@ def main() -> None:
     parser.add_argument("--min-task-window", type=int, default=40)
     parser.add_argument("--max-task-window", type=int, default=160)
     parser.add_argument("--planning-lookahead-steps", type=int, default=30)
+    parser.add_argument(
+        "--coalition-reservations",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable versioned two-phase reserve/commit for simultaneous tasks.",
+    )
+    parser.add_argument("--reservation-ttl-steps", type=int, default=2)
+    parser.add_argument("--reservation-failure-penalty", type=float, default=-0.05)
+    parser.add_argument("--cooperative-observers-min", type=int, default=2)
+    parser.add_argument("--cooperative-observers-max", type=int, default=2)
+    parser.add_argument(
+        "--weak-mean-field",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Ablation switch for plane/region weak-interaction summaries.",
+    )
+    parser.add_argument(
+        "--factorized-critic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use pooled task factors instead of a flat fixed-width critic.",
+    )
     parser.add_argument("--scenario-seed-cycle", type=int, default=0)
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument(
         "--architecture",
-        choices=["mlp", "opportunity_graph", "fast_slow_graph"],
+        choices=[
+            "mlp",
+            "opportunity_graph",
+            "fast_slow_graph",
+            "hierarchical_coalition_graph",
+        ],
         default="mlp",
-        help="Choose MLP, graph, or bi-timescale graph actor.",
+        help="Choose MLP, graph, bi-timescale graph, or thousand-agent coalition graph.",
     )
     parser.add_argument(
         "--graph-factor-messages",
@@ -576,6 +660,16 @@ def main() -> None:
         parser.error("--area-coverage-samples must be at least 64")
     if args.progress_every_steps < 1:
         parser.error("--progress-every-steps must be at least 1")
+    if args.reservation_ttl_steps < 1:
+        parser.error("--reservation-ttl-steps must be at least 1")
+    if not (
+        1
+        <= args.cooperative_observers_min
+        <= args.cooperative_observers_max
+    ):
+        parser.error(
+            "cooperative observer bounds must satisfy 1 <= min <= max"
+        )
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -592,18 +686,39 @@ def main() -> None:
         feedback_gain=args.curriculum_feedback_gain,
     )
     observations, _ = env.reset(seed=args.seed)
-    graph_actor = args.architecture in {"opportunity_graph", "fast_slow_graph"}
+    hierarchical_actor = args.architecture == "hierarchical_coalition_graph"
+    graph_actor = args.architecture in {
+        "opportunity_graph",
+        "fast_slow_graph",
+        "hierarchical_coalition_graph",
+    }
     fast_slow_actor = args.architecture == "fast_slow_graph"
     flatten_actor = (
-        flatten_opportunity_graph_all if graph_actor else flatten_local_all
+        flatten_hierarchical_coalition_all
+        if hierarchical_actor
+        else flatten_opportunity_graph_all
+        if graph_actor
+        else flatten_local_all
     )
 
     def base_actor_observations(current_observations):
         flattened = flatten_actor(current_observations)
-        if graph_actor and not args.graph_factor_messages:
+        if graph_actor and (
+            not args.graph_factor_messages
+            or (hierarchical_actor and not args.weak_mean_field)
+        ):
             agents, local_obs, global_state, masks = flattened
             local_obs = local_obs.copy()
-            local_obs[:, -env.config.candidate_k * 4 :] = 0.0
+            if not args.graph_factor_messages:
+                factor_stop = -12 if hierarchical_actor else None
+                factor_start = (
+                    factor_stop - env.config.candidate_k * 4
+                    if factor_stop is not None
+                    else -env.config.candidate_k * 4
+                )
+                local_obs[:, factor_start:factor_stop] = 0.0
+            if hierarchical_actor and not args.weak_mean_field:
+                local_obs[:, -12:] = 0.0
             return agents, local_obs, global_state, masks
         return flattened
 
@@ -620,7 +735,17 @@ def main() -> None:
     actor_dim = local_sample.shape[1]
     critic_dim = actor_dim + len(global_sample) if centralized else actor_dim
     action_dim = masks_sample.shape[1]
-    if fast_slow_actor:
+    if hierarchical_actor:
+        model = HierarchicalCoalitionActorCritic(
+            critic_dim=critic_dim,
+            candidate_k=env.config.candidate_k,
+            neighbor_k=env.config.neighbor_k,
+            hidden_dim=args.hidden_dim,
+            activation=args.activation,
+            layer_norm=args.layer_norm,
+            factorized_critic=args.factorized_critic,
+        ).to(device)
+    elif fast_slow_actor:
         model = FastSlowOpportunityGraphActorCritic(
             critic_dim=critic_dim,
             candidate_k=env.config.candidate_k,
@@ -650,7 +775,9 @@ def main() -> None:
             args.layer_norm,
         ).to(device)
     algorithm_id = (
-        "oasis_fast_slow_graph"
+        "oasis_hierarchical_coalition_graph"
+        if hierarchical_actor
+        else "oasis_fast_slow_graph"
         if fast_slow_actor
         else "oasis_graph"
         if graph_actor
@@ -872,6 +999,18 @@ def main() -> None:
                         "cooperative_completed_tasks": live_summary[
                             "cooperative_completed_tasks"
                         ],
+                        "active_reservations": live_summary[
+                            "active_reservations"
+                        ],
+                        "reserved_satellites": live_summary[
+                            "reserved_satellites"
+                        ],
+                        "reservation_commit_rate": live_summary[
+                            "reservation_commit_rate"
+                        ],
+                        "reservation_member_waste": live_summary[
+                            "reservation_member_waste"
+                        ],
                         "total_priority_completed": live_summary[
                             "total_priority_completed"
                         ],
@@ -1051,6 +1190,18 @@ def main() -> None:
                 "avoidable_idle_actions": summary["avoidable_idle_actions"],
                 "completed_tasks": summary["completed_tasks"],
                 "cooperative_completed_tasks": summary["cooperative_completed_tasks"],
+                "active_reservations": summary["active_reservations"],
+                "reserved_satellites": summary["reserved_satellites"],
+                "reservation_created": summary["reservation_created"],
+                "reservation_committed": summary["reservation_committed"],
+                "reservation_expired": summary["reservation_expired"],
+                "reservation_member_waste": summary[
+                    "reservation_member_waste"
+                ],
+                "reservation_commit_rate": summary[
+                    "reservation_commit_rate"
+                ],
+                "mean_reservation_fill": summary["mean_reservation_fill"],
                 "expired_tasks": summary["expired_tasks"],
                 "total_priority_completed": summary["total_priority_completed"],
                 "mean_observation_quality": summary["mean_observation_quality"],

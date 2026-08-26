@@ -1,0 +1,96 @@
+{
+  "version": 2,
+  "experiment": "thousand_satellite_eo_paper_suite",
+  "description": "Same-budget 512-satellite training, held-out 512/1024 evaluation, mechanism ablations, sparse-opportunity stress, coalition stress, and geographic EO-demand shifts.",
+  "resources": {
+    "gpus": [0, 1],
+    "jobs_per_gpu": 1,
+    "tensorboard_port": 6012,
+    "dashboard_port": 8770
+  },
+  "physics": {
+    "max_steps": 240,
+    "step_duration_seconds": 30.0,
+    "point_observation_seconds": 5.0,
+    "fov_deg": 45.0,
+    "planning_lookahead_steps": 30,
+    "altitude_km": 550.0,
+    "eccentricity": 0.001,
+    "inclination_deg": 97.6,
+    "walker_phasing": 1,
+    "start_utc": "2026-08-01T00:00:00Z"
+  },
+  "training": {
+    "satellites": 512,
+    "planes": 16,
+    "tasks": 24576,
+    "episodes": 300,
+    "candidate_k": 24,
+    "neighbor_k": 6,
+    "hidden_dim": 128,
+    "seeds": [701, 702, 703]
+  },
+  "evaluation": {
+    "episodes": 20,
+    "seed_by_training_seed": {
+      "701": 1701,
+      "702": 2701,
+      "703": 3701
+    },
+    "scales": [
+      {"satellites": 128, "planes": 8, "tasks": 6144},
+      {"satellites": 256, "planes": 8, "tasks": 12288},
+      {"satellites": 512, "planes": 16, "tasks": 24576},
+      {"satellites": 1024, "planes": 32, "tasks": 49152}
+    ]
+  },
+  "methods": {
+    "full": {"trainer": "oasis", "group": "primary"},
+    "oasis_graph": {"trainer": "oasis", "group": "primary"},
+    "mlp_opportunity": {"trainer": "oasis", "group": "baseline"},
+    "ippo": {"trainer": "ppo", "group": "baseline"},
+    "mappo": {"trainer": "ppo", "group": "primary"},
+    "qmix": {"trainer": "qmix", "group": "primary"},
+    "ps_dqn": {"trainer": "dqn", "group": "baseline"},
+    "no_reservation": {"trainer": "oasis", "group": "ablation"},
+    "no_weak_mean_field": {"trainer": "oasis", "group": "ablation"},
+    "no_factorized_critic": {"trainer": "oasis", "group": "ablation"},
+    "no_duration_correction": {"trainer": "oasis", "group": "ablation"},
+    "no_opportunity_balance": {"trainer": "oasis", "group": "ablation"},
+    "no_factor_messages": {"trainer": "oasis", "group": "ablation"},
+    "no_learned_bids": {"trainer": "oasis", "group": "ablation"}
+  },
+  "catalog": {
+    "train_seed": 4701,
+    "test_seed": 4702,
+    "minimum_separation_deg": 0.0,
+    "window_steps": [8, 32],
+    "cooperative_observers": [2, 5],
+    "cooperation_fractions": {
+      "single": 0.70,
+      "sequential": 0.20,
+      "simultaneous": 0.10
+    }
+  },
+  "stress": {
+    "episodes": 10,
+    "methods": ["full", "oasis_graph", "no_reservation"],
+    "scale": {"satellites": 1024, "planes": 32},
+    "geography": [
+      {"name": "global_uniform", "profile": "global_uniform"},
+      {"name": "region_clustered", "profile": "region_clustered"},
+      {"name": "event_burst", "profile": "event_burst"}
+    ],
+    "cooperation": [
+      {"name": "coop_00", "single": 1.00, "sequential": 0.00, "simultaneous": 0.00},
+      {"name": "coop_10", "single": 0.90, "sequential": 0.07, "simultaneous": 0.03},
+      {"name": "coop_30", "single": 0.70, "sequential": 0.20, "simultaneous": 0.10},
+      {"name": "coop_50", "single": 0.50, "sequential": 0.33, "simultaneous": 0.17}
+    ],
+    "task_density": [
+      {"name": "density_025", "tasks": 12288},
+      {"name": "density_050", "tasks": 24576},
+      {"name": "density_100", "tasks": 49152}
+    ]
+  }
+}

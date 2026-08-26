@@ -267,6 +267,174 @@ class FastSlowOpportunityGraphActorCritic(nn.Module):
         return self.critic(critic_obs).squeeze(-1)
 
 
+class HierarchicalCoalitionActorCritic(nn.Module):
+    """Scale-invariant actor and task/mean-field factor critic.
+
+    Strong satellite--task interactions are encoded exactly on the bounded
+    opportunity graph. Weak plane/region interactions are represented by a
+    fixed-width mean-field context. The critic pools task factors instead of
+    concatenating all agent states, so both parameter count and input width are
+    independent of constellation size.
+    """
+
+    def __init__(
+        self,
+        critic_dim: int,
+        candidate_k: int,
+        neighbor_k: int,
+        hidden_dim: int = 256,
+        activation: str = "relu",
+        layer_norm: bool = True,
+        self_dim: int = 24,
+        task_dim: int = 24,
+        neighbor_dim: int = 13,
+        neighbor_action_dim: int = 4,
+        factor_dim: int = 4,
+        weak_dim: int = 12,
+        factorized_critic: bool = True,
+    ):
+        super().__init__()
+        self.candidate_k = candidate_k
+        self.task_dim = task_dim
+        self.factor_dim = factor_dim
+        self.weak_dim = weak_dim
+        self.context_dim = self_dim + neighbor_k * neighbor_dim + neighbor_action_dim
+        self.graph_actor_dim = self.context_dim + candidate_k * (
+            task_dim + factor_dim
+        )
+        self.actor_dim = self.graph_actor_dim + weak_dim
+        self.global_dim = critic_dim - self.actor_dim
+        self.factorized_critic = factorized_critic
+        if self.global_dim <= 0:
+            raise ValueError(
+                "Hierarchical critic requires actor observations plus a "
+                "fixed-width global summary."
+            )
+
+        self.context_encoder = make_mlp(
+            self.context_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+        )
+        self.candidate_encoder = make_mlp(
+            task_dim + factor_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+        )
+        self.weak_encoder = make_mlp(
+            weak_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+        )
+        activation_class = {"relu": nn.ReLU, "silu": nn.SiLU, "tanh": nn.Tanh}[
+            activation
+        ]
+        self.resource_head = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            activation_class(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.wait_downlink_head = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            activation_class(),
+            nn.Linear(hidden_dim, 2),
+        )
+
+        if factorized_critic:
+            self.critic_context_encoder = make_mlp(
+                self.context_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+            )
+            self.critic_candidate_encoder = make_mlp(
+                task_dim + factor_dim,
+                hidden_dim,
+                hidden_dim,
+                1,
+                activation,
+                layer_norm,
+            )
+            self.critic_weak_encoder = make_mlp(
+                weak_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+            )
+            self.critic_global_encoder = make_mlp(
+                self.global_dim, hidden_dim, hidden_dim, 1, activation, layer_norm
+            )
+            self.value_head = nn.Sequential(
+                nn.Linear(hidden_dim * 5, hidden_dim),
+                activation_class(),
+                nn.Linear(hidden_dim, 1),
+            )
+        else:
+            self.flat_critic = make_mlp(
+                critic_dim, 1, hidden_dim, 2, activation, layer_norm
+            )
+
+    def _split_actor(self, actor_obs: torch.Tensor):
+        if actor_obs.shape[-1] != self.actor_dim:
+            raise ValueError(
+                f"Expected hierarchical actor width {self.actor_dim}, "
+                f"got {actor_obs.shape[-1]}"
+            )
+        graph_obs = actor_obs[..., : self.graph_actor_dim]
+        weak = actor_obs[..., self.graph_actor_dim :]
+        context = graph_obs[..., : self.context_dim]
+        candidate_stop = self.context_dim + self.candidate_k * self.task_dim
+        candidates = graph_obs[..., self.context_dim : candidate_stop].reshape(
+            -1, self.candidate_k, self.task_dim
+        )
+        factors = graph_obs[..., candidate_stop:].reshape(
+            -1, self.candidate_k, self.factor_dim
+        )
+        return context, candidates, factors, weak
+
+    def policy_logits(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        context, candidates, factors, weak = self._split_actor(actor_obs)
+        context_hidden = self.context_encoder(context)
+        candidate_hidden = self.candidate_encoder(
+            torch.cat([candidates, factors], dim=-1)
+        )
+        weak_hidden = self.weak_encoder(weak)
+        repeated_context = context_hidden.unsqueeze(1).expand(
+            -1, self.candidate_k, -1
+        )
+        repeated_weak = weak_hidden.unsqueeze(1).expand(
+            -1, self.candidate_k, -1
+        )
+        task_logits = self.resource_head(
+            torch.cat([repeated_context, candidate_hidden, repeated_weak], dim=-1)
+        ).squeeze(-1)
+        wait_downlink = self.wait_downlink_head(
+            torch.cat([context_hidden, weak_hidden], dim=-1)
+        )
+        return torch.cat([wait_downlink, task_logits], dim=-1)
+
+    def values(self, critic_obs: torch.Tensor) -> torch.Tensor:
+        if critic_obs.shape[-1] != self.actor_dim + self.global_dim:
+            raise ValueError(
+                f"Expected hierarchical critic width "
+                f"{self.actor_dim + self.global_dim}, got {critic_obs.shape[-1]}"
+            )
+        if not self.factorized_critic:
+            return self.flat_critic(critic_obs).squeeze(-1)
+        actor_obs = critic_obs[..., : self.actor_dim]
+        global_obs = critic_obs[..., self.actor_dim :]
+        context, candidates, factors, weak = self._split_actor(actor_obs)
+        context_hidden = self.critic_context_encoder(context)
+        task_hidden = self.critic_candidate_encoder(
+            torch.cat([candidates, factors], dim=-1)
+        )
+        valid = torch.sum(torch.abs(candidates), dim=-1, keepdim=True) > 0
+        valid_float = valid.to(task_hidden.dtype)
+        task_mean = torch.sum(task_hidden * valid_float, dim=1) / torch.sum(
+            valid_float, dim=1
+        ).clamp_min(1.0)
+        masked_tasks = task_hidden.masked_fill(~valid, -1e9)
+        task_max = torch.max(masked_tasks, dim=1).values
+        task_max = torch.where(
+            torch.any(valid, dim=1), task_max, torch.zeros_like(task_max)
+        )
+        weak_hidden = self.critic_weak_encoder(weak)
+        global_hidden = self.critic_global_encoder(global_obs)
+        value_features = torch.cat(
+            [context_hidden, task_mean, task_max, weak_hidden, global_hidden],
+            dim=-1,
+        )
+        return self.value_head(value_features).squeeze(-1)
+
+
 def slow_strategy_features(
     graph_actor_obs: np.ndarray,
     candidate_k: int,
@@ -434,6 +602,95 @@ def flatten_opportunity_graph_all(
     agents, local, global_state, masks = flatten_local_all(observations)
     factors = opportunity_graph_features(observations)
     actor_obs = np.concatenate([local, factors], axis=1).astype(np.float32, copy=False)
+    return agents, actor_obs, global_state, masks
+
+
+def weak_mean_field_features(
+    observations: dict[str, dict[str, np.ndarray]],
+    latitude_bins: int = 6,
+    longitude_bins: int = 12,
+) -> np.ndarray:
+    """Pool weak interactions by orbital plane and geographic region.
+
+    The twelve outputs are fixed-width population statistics. Direct task
+    competitors remain in the exact opportunity graph; this function only
+    summarizes the background load that would otherwise require all-to-all
+    communication.
+    """
+
+    agents = list(observations)
+    if not agents:
+        return np.empty((0, 12), dtype=np.float32)
+    self_features = np.stack(
+        [np.asarray(observations[agent]["self"], dtype=np.float32) for agent in agents]
+    )
+    action_means = np.stack(
+        [
+            np.asarray(
+                observations[agent]["neighbor_action_mean"], dtype=np.float32
+            )
+            for agent in agents
+        ]
+    )
+    task_opportunity = np.asarray(
+        [
+            float(np.any(np.asarray(observations[agent]["action_mask"])[2:]))
+            for agent in agents
+        ],
+        dtype=np.float32,
+    )
+    plane_keys = np.round(self_features[:, 1], decimals=6)
+    latitude_index = np.clip(
+        ((self_features[:, 2] + 1.0) * 0.5 * latitude_bins).astype(np.int32),
+        0,
+        latitude_bins - 1,
+    )
+    longitude_index = np.clip(
+        ((self_features[:, 3] + 1.0) * 0.5 * longitude_bins).astype(np.int32),
+        0,
+        longitude_bins - 1,
+    )
+    region_keys = latitude_index * longitude_bins + longitude_index
+    output = np.zeros((len(agents), 12), dtype=np.float32)
+    for keys, start, include_actions in (
+        (plane_keys, 0, True),
+        (region_keys, 8, False),
+    ):
+        groups: dict[float | int, list[int]] = {}
+        for row, key in enumerate(keys):
+            groups.setdefault(key.item(), []).append(row)
+        for members in groups.values():
+            index = np.asarray(members, dtype=np.int64)
+            population = self_features[index]
+            base = np.asarray(
+                [
+                    float(np.mean(population[:, 5])),
+                    float(np.mean(population[:, 6])),
+                    float(np.mean(population[:, 17])),
+                    float(np.mean(task_opportunity[index])),
+                ],
+                dtype=np.float32,
+            )
+            if include_actions:
+                values = np.concatenate(
+                    [base, np.mean(action_means[index], axis=0).astype(np.float32)]
+                )
+            else:
+                values = base
+            output[index, start : start + len(values)] = values
+    return output
+
+
+def flatten_hierarchical_coalition_all(
+    observations: dict[str, dict[str, np.ndarray]],
+):
+    agents, graph_actor_obs, global_state, masks = flatten_opportunity_graph_all(
+        observations
+    )
+    weak = weak_mean_field_features(observations)
+    actor_obs = np.concatenate([graph_actor_obs, weak], axis=1).astype(
+        np.float32, copy=False
+    )
     return agents, actor_obs, global_state, masks
 
 

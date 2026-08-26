@@ -106,6 +106,21 @@ class EnvConfig:
     simultaneous_tolerance_steps: int = 2
     sequential_max_gap_steps: int = 120
 
+    # Asynchronous coalition formation. Simultaneous requests use a two-phase
+    # reserve/commit protocol instead of requiring every observer to select the
+    # task in exactly the same simulator call. Reservations are soft resource
+    # leases: one task per satellite, versioned to reject stale proposals, and
+    # automatically released when the lease expires.
+    coalition_reservations: bool = False
+    reservation_ttl_steps: int = 2
+    max_reservations_per_satellite: int = 1
+    reservation_failure_penalty: float = -0.05
+
+    # Hierarchical weak-interaction summaries used by the thousand-agent
+    # policy. Strong task relations remain explicit sparse graph edges.
+    mean_field_latitude_bins: int = 6
+    mean_field_longitude_bins: int = 12
+
     # Area requests are continuous oriented rectangles.  Satellite actions are
     # directed imaging-strip polygons, not grid cells.  A deterministic
     # low-discrepancy sample set only estimates the cumulative strip union.

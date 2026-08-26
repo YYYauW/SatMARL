@@ -46,6 +46,16 @@ COOPERATION_WEIGHTS = {
     "sequential": 0.20,
     "simultaneous": 0.10,
 }
+GEOGRAPHIC_CLUSTER_CENTERS = (
+    (37.0, -122.0),
+    (-12.0, -55.0),
+    (51.0, 10.0),
+    (4.0, 22.0),
+    (23.0, 79.0),
+    (35.0, 116.0),
+    (-25.0, 135.0),
+    (1.0, 103.0),
+)
 AREA_SIZE_WEIGHTS = {"small": 1.0 / 3.0, "medium": 1.0 / 3.0, "large": 1.0 / 3.0}
 AREA_SIZE_RANGES_KM = {
     "small": (12.0, 50.0),
@@ -140,9 +150,12 @@ def stratified_sphere(
     rng.shuffle(cells)
     longitude_offset = float(rng.uniform(-180.0, 180.0))
     cosine_limit = math.cos(math.radians(minimum_separation_deg))
+    enforce_separation = minimum_separation_deg > 0.0
     forbidden_vectors = (
         to_unit_vectors(forbidden_points)
-        if forbidden_points is not None and len(forbidden_points)
+        if enforce_separation
+        and forbidden_points is not None
+        and len(forbidden_points)
         else np.empty((0, 3), dtype=np.float64)
     )
     accepted_points: list[tuple[float, float]] = []
@@ -172,7 +185,7 @@ def stratified_sphere(
                 and float(np.max(forbidden_vectors @ vector)) > cosine_limit
             ):
                 continue
-            if accepted_vectors:
+            if enforce_separation and accepted_vectors:
                 existing = np.asarray(accepted_vectors)
                 if float(np.max(existing @ vector)) > cosine_limit:
                     continue
@@ -190,6 +203,94 @@ def stratified_sphere(
     points = np.asarray(accepted_points, dtype=np.float64)
     rng.shuffle(points)
     return points, (latitude_bands, longitude_sectors)
+
+
+def _sample_around_centers(
+    count: int,
+    rng: np.random.Generator,
+    centers: tuple[tuple[float, float], ...],
+    standard_deviation_deg: float,
+) -> np.ndarray:
+    """Sample deterministic-count geographic clusters on the sphere.
+
+    The profiles are intentionally synthetic demand shifts. They add geographic
+    structure without introducing image, language, or event-label supervision.
+    """
+
+    center_indices = np.resize(np.arange(len(centers), dtype=np.int32), count)
+    rng.shuffle(center_indices)
+    points = np.empty((count, 2), dtype=np.float64)
+    for index, center_index in enumerate(center_indices):
+        center_latitude, center_longitude = centers[int(center_index)]
+        latitude = float(
+            np.clip(
+                rng.normal(center_latitude, standard_deviation_deg),
+                -85.0,
+                85.0,
+            )
+        )
+        longitude_scale = standard_deviation_deg / max(
+            0.25, abs(math.cos(math.radians(center_latitude)))
+        )
+        longitude = float(rng.normal(center_longitude, longitude_scale))
+        longitude = ((longitude + 180.0) % 360.0) - 180.0
+        points[index] = (latitude, longitude)
+    rng.shuffle(points)
+    return points
+
+
+def geographic_points(
+    count: int,
+    rng: np.random.Generator,
+    *,
+    profile: str,
+    cluster_standard_deviation_deg: float,
+    event_center_latitude_deg: float,
+    event_center_longitude_deg: float,
+    event_burst_fraction: float,
+    forbidden_points: np.ndarray | None = None,
+    minimum_separation_deg: float = 0.2,
+) -> tuple[np.ndarray, tuple[int, int] | None]:
+    """Generate a declared geographic demand profile."""
+
+    if profile == "global_uniform":
+        return stratified_sphere(
+            count,
+            rng,
+            forbidden_points=forbidden_points,
+            minimum_separation_deg=minimum_separation_deg,
+        )
+    if profile == "region_clustered":
+        return (
+            _sample_around_centers(
+                count,
+                rng,
+                GEOGRAPHIC_CLUSTER_CENTERS,
+                cluster_standard_deviation_deg,
+            ),
+            None,
+        )
+    if profile == "event_burst":
+        burst_count = int(round(count * event_burst_fraction))
+        burst = _sample_around_centers(
+            burst_count,
+            rng,
+            ((event_center_latitude_deg, event_center_longitude_deg),),
+            cluster_standard_deviation_deg,
+        )
+        background_count = count - burst_count
+        if background_count:
+            background, _ = stratified_sphere(
+                background_count,
+                rng,
+                minimum_separation_deg=0.0,
+            )
+            points = np.concatenate([burst, background], axis=0)
+            rng.shuffle(points)
+        else:
+            points = burst
+        return points, None
+    raise ValueError(f"Unknown spatial profile: {profile}")
 
 
 def quota_counts(count: int, weights: dict[str, float]) -> dict[str, int]:
@@ -241,6 +342,9 @@ def build_records(
     min_window_steps: int,
     max_window_steps: int,
     area_fraction: float = 0.0,
+    cooperative_observers_min: int = 2,
+    cooperative_observers_max: int = 2,
+    cooperation_weights: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     count = len(points)
     modes = balanced_labels(count, MODE_WEIGHTS, rng)
@@ -254,8 +358,22 @@ def build_records(
     point_indices = np.flatnonzero(target_types == "point")
     cooperation = np.full(count, "auto", dtype="<U12")
     cooperation[point_indices] = balanced_labels(
-        len(point_indices), COOPERATION_WEIGHTS, rng
+        len(point_indices), cooperation_weights or COOPERATION_WEIGHTS, rng
     )
+    cooperative_indices = point_indices[
+        cooperation[point_indices] != "single"
+    ]
+    observer_counts = np.ones(count, dtype=np.int32)
+    if len(cooperative_indices):
+        if cooperative_observers_min == cooperative_observers_max:
+            observer_counts[cooperative_indices] = cooperative_observers_min
+        else:
+            observer_counts[cooperative_indices] = balanced_integer_values(
+                len(cooperative_indices),
+                cooperative_observers_min,
+                cooperative_observers_max,
+                rng,
+            )
     area_size_classes = balanced_labels(
         len(area_indices), AREA_SIZE_WEIGHTS, rng
     )
@@ -332,7 +450,7 @@ def build_records(
                 "required_observers": (
                     0
                     if target_type == "area"
-                    else 1 if cooperation_mode == "single" else 2
+                    else int(observer_counts[index])
                 ),
                 "max_coordination_gap_steps": 120,
                 "observation_duration_seconds": (
@@ -463,6 +581,29 @@ def main() -> None:
     parser.add_argument("--max-window-steps", type=int, default=160)
     parser.add_argument("--minimum-separation-deg", type=float, default=0.2)
     parser.add_argument(
+        "--skip-separation-audit",
+        action="store_true",
+        help=(
+            "Skip the quadratic exact angular-separation audit for very large "
+            "catalogs. Exact train/test coordinate overlap is still checked."
+        ),
+    )
+    parser.add_argument("--cooperative-observers-min", type=int, default=2)
+    parser.add_argument("--cooperative-observers-max", type=int, default=2)
+    parser.add_argument("--single-fraction", type=float, default=0.70)
+    parser.add_argument("--sequential-fraction", type=float, default=0.20)
+    parser.add_argument("--simultaneous-fraction", type=float, default=0.10)
+    parser.add_argument(
+        "--spatial-profile",
+        choices=["global_uniform", "region_clustered", "event_burst"],
+        default="global_uniform",
+        help="Synthetic EO-demand geography used for robustness evaluation.",
+    )
+    parser.add_argument("--cluster-standard-deviation-deg", type=float, default=6.0)
+    parser.add_argument("--event-center-latitude-deg", type=float, default=30.0)
+    parser.add_argument("--event-center-longitude-deg", type=float, default=110.0)
+    parser.add_argument("--event-burst-fraction", type=float, default=0.80)
+    parser.add_argument(
         "--area-fraction",
         type=float,
         default=0.0,
@@ -494,19 +635,54 @@ def main() -> None:
         parser.error("Training and test seeds must differ.")
     if args.minimum_separation_deg < 0.0:
         parser.error("--minimum-separation-deg must be nonnegative.")
+    if not (
+        2
+        <= args.cooperative_observers_min
+        <= args.cooperative_observers_max
+    ):
+        parser.error(
+            "Require 2 <= cooperative observers min <= cooperative observers max."
+        )
     if not 0.0 <= args.area_fraction <= 1.0:
         parser.error("--area-fraction must be within [0, 1].")
+    cooperation_weights = {
+        "single": args.single_fraction,
+        "sequential": args.sequential_fraction,
+        "simultaneous": args.simultaneous_fraction,
+    }
+    if any(value < 0.0 for value in cooperation_weights.values()) or not math.isclose(
+        sum(cooperation_weights.values()), 1.0, rel_tol=0.0, abs_tol=1e-9
+    ):
+        parser.error("Cooperation fractions must be nonnegative and sum to 1.")
+    if args.cluster_standard_deviation_deg <= 0.0:
+        parser.error("--cluster-standard-deviation-deg must be positive.")
+    if not -85.0 <= args.event_center_latitude_deg <= 85.0:
+        parser.error("--event-center-latitude-deg must be within [-85, 85].")
+    if not -180.0 <= args.event_center_longitude_deg <= 180.0:
+        parser.error("--event-center-longitude-deg must be within [-180, 180].")
+    if not 0.0 <= args.event_burst_fraction <= 1.0:
+        parser.error("--event-burst-fraction must be within [0, 1].")
 
     train_rng = np.random.default_rng(args.train_seed)
     test_rng = np.random.default_rng(args.test_seed)
-    train_points, train_grid = stratified_sphere(
+    train_points, train_grid = geographic_points(
         args.train_count,
         train_rng,
+        profile=args.spatial_profile,
+        cluster_standard_deviation_deg=args.cluster_standard_deviation_deg,
+        event_center_latitude_deg=args.event_center_latitude_deg,
+        event_center_longitude_deg=args.event_center_longitude_deg,
+        event_burst_fraction=args.event_burst_fraction,
         minimum_separation_deg=args.minimum_separation_deg,
     )
-    test_points, test_grid = stratified_sphere(
+    test_points, test_grid = geographic_points(
         args.test_count,
         test_rng,
+        profile=args.spatial_profile,
+        cluster_standard_deviation_deg=args.cluster_standard_deviation_deg,
+        event_center_latitude_deg=args.event_center_latitude_deg,
+        event_center_longitude_deg=args.event_center_longitude_deg,
+        event_burst_fraction=args.event_burst_fraction,
         forbidden_points=train_points,
         minimum_separation_deg=args.minimum_separation_deg,
     )
@@ -518,6 +694,9 @@ def main() -> None:
         min_window_steps=args.min_window_steps,
         max_window_steps=args.max_window_steps,
         area_fraction=args.area_fraction,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
+        cooperation_weights=cooperation_weights,
     )
     test_records = build_records(
         "test",
@@ -527,6 +706,9 @@ def main() -> None:
         min_window_steps=args.min_window_steps,
         max_window_steps=args.max_window_steps,
         area_fraction=args.area_fraction,
+        cooperative_observers_min=args.cooperative_observers_min,
+        cooperative_observers_max=args.cooperative_observers_max,
+        cooperation_weights=cooperation_weights,
     )
 
     output_dir = args.output_dir.expanduser().resolve()
@@ -552,11 +734,13 @@ def main() -> None:
         "design": {
             "spatial_sampling": (
                 "one jittered point per equal-area sin(latitude)-longitude cell"
+                if args.spatial_profile == "global_uniform"
+                else args.spatial_profile
             ),
             "orbit_aligned": False,
-            "geographic_demand_model": "global synthetic benchmark",
+            "geographic_demand_model": args.spatial_profile,
             "mode_weights": MODE_WEIGHTS,
-            "cooperation_weights": COOPERATION_WEIGHTS,
+            "cooperation_weights": cooperation_weights,
             "area_fraction": args.area_fraction,
             "area_size_weights": AREA_SIZE_WEIGHTS,
             "area_size_ranges_km": AREA_SIZE_RANGES_KM,
@@ -572,6 +756,16 @@ def main() -> None:
             "minimum_within_and_cross_split_separation_deg": (
                 args.minimum_separation_deg
             ),
+            "cooperative_observers": [
+                args.cooperative_observers_min,
+                args.cooperative_observers_max,
+            ],
+            "cluster_standard_deviation_deg": args.cluster_standard_deviation_deg,
+            "event_center_deg": [
+                args.event_center_latitude_deg,
+                args.event_center_longitude_deg,
+            ],
+            "event_burst_fraction": args.event_burst_fraction,
         },
         "parameters": {
             "train_count": args.train_count,
@@ -579,8 +773,8 @@ def main() -> None:
             "train_seed": args.train_seed,
             "test_seed": args.test_seed,
             "max_steps": args.max_steps,
-            "train_equal_area_grid": list(train_grid),
-            "test_equal_area_grid": list(test_grid),
+            "train_equal_area_grid": list(train_grid) if train_grid else None,
+            "test_equal_area_grid": list(test_grid) if test_grid else None,
         },
         "train": summarize_catalog(train_records),
         "test": summarize_catalog(test_records),
@@ -588,14 +782,25 @@ def main() -> None:
             "exact_coordinate_overlap": len(
                 train_coordinates.intersection(test_coordinates)
             ),
-            "minimum_train_separation_deg": minimum_angular_separation_deg(
-                train_points
+            "minimum_train_separation_deg": (
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(train_points)
             ),
-            "minimum_test_separation_deg": minimum_angular_separation_deg(
-                test_points
+            "minimum_test_separation_deg": (
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(test_points)
             ),
             "minimum_cross_split_separation_deg": (
-                minimum_angular_separation_deg(train_points, test_points)
+                None
+                if args.skip_separation_audit
+                else minimum_angular_separation_deg(train_points, test_points)
+            ),
+            "separation_audit": (
+                "skipped_for_large_catalog"
+                if args.skip_separation_audit
+                else "exact"
             ),
         },
     }
