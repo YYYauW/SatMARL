@@ -93,6 +93,10 @@ def priority_actions(env, observations):
 def prepare_catalog(config, path, episode):
     if path.exists():
         return
+    if config["catalog"].get("sampling_protocol"):
+        from balanced_task_catalog import generate_records
+        write_csv(path, generate_records(config, episode))
+        return
     rng = np.random.default_rng(config["scenario_seed"]+episode)
     specification = config["catalog"]
     points, _ = geographic_points(
@@ -233,6 +237,10 @@ def main():
         config["methods"] = ["priority"]
         config["training_seeds"] = [701]  # Diagnostic, not a trained-seed comparison.
     config_class(**config["env"])
+    balanced_catalog = bool(config["catalog"].get("sampling_protocol"))
+    if balanced_catalog:
+        from balanced_task_catalog import grid_options
+        grid_options(config)
     for n in config["satellite_counts"]:
         if str(n) not in config["planes"]:
             raise ValueError(f"Explicit plane count needed in config for N={n}")
@@ -267,6 +275,8 @@ def main():
             source_files += [ROOT/"scripts/evaluate_marl.py", ROOT/"scripts/marl_common.py"]
         if event_mode:
             source_files.append(ROOT/"src/sat_marl_env/event_transmission.py")
+        if balanced_catalog:
+            source_files.append(ROOT/"scripts/balanced_task_catalog.py")
         identity = dict(config=config, policy=args.policy, jobs=plan,
                         device=args.device, save_all_ledgers=args.save_all_ledgers,
                         source_sha256={str(p.relative_to(ROOT)): sha(p) for p in source_files},
@@ -290,6 +300,13 @@ def main():
             catalog = scenario/f"targets_episode{episode:03d}.csv"
             prepare_catalog(config, catalog, episode)
             assets[str(catalog.relative_to(run_root))] = sha(catalog)
+        if balanced_catalog:
+            from balanced_task_catalog import balance_report
+            report = balance_report(config, [scenario/f"targets_episode{episode:03d}.csv"
+                                             for episode in range(config["episodes"])])
+            atomic_json(run_root/"scenario_balance.json", report)
+            print(f"Balanced catalogue checks passed: {report['episode_count']} scenarios, "
+                  f"{len(config['task_counts'])} task counts each.", flush=True)
         for n in config["satellite_counts"]:
             orbit = scenario/f"orbit_n{n}.npz"
             prepare_orbit(config, orbit, n)
