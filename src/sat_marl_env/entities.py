@@ -23,6 +23,9 @@ class DataPacketState:
     priority: float
     source_satellite_id: int
     delivered_mb: float = 0.0
+    # Optional continuous-time metadata used only by the physical downlink test.
+    generated_time_seconds: float | None = None
+    acquisition_id: int | None = None
 
 
 @dataclass(slots=True)

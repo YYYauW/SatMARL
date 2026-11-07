@@ -1844,12 +1844,7 @@ class SatTaskingEnv:
                 )
                 if warmup_steps:
                     total_energy += cfg.payload_warmup_energy
-                storage_required = task.compressed_data_mb / max(
-                    1,
-                    task.required_strips
-                    if task.is_area
-                    else task.required_observers,
-                )
+                storage_required = self._observation_storage_mb(task)
                 plan: Plan = {
                     **geometry,
                     "slew_deg": float(slew_deg),
@@ -1910,12 +1905,25 @@ class SatTaskingEnv:
                 elif sat.storage + storage_required > cfg.max_storage:
                     reason = "insufficient_storage"
                 if reason == "ok":
+                    reason = self._additional_plan_failure(sat, task, plan)
+                if reason == "ok":
                     result = (True, reason, plan)
                     break
                 result = (False, reason, plan)
 
         self._plan_cache[key] = result
         return result
+
+    def _observation_storage_mb(self, task: TaskState) -> float:
+        """Archived accounting; physical downlink experiments override this hook."""
+        return task.compressed_data_mb / max(
+            1, task.required_strips if task.is_area else task.required_observers
+        )
+
+    def _additional_plan_failure(
+        self, sat: SatelliteState, task: TaskState, plan: Plan
+    ) -> str:
+        return "ok"
 
     def _task_geometry(
         self, sat: SatelliteState, task: TaskState, offset_steps: int = 0
