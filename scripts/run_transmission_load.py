@@ -20,6 +20,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/"src"))
 from sat_marl_env.transmission import MODEL_VERSION, TransmissionConfig, TransmissionEnv
+from sat_marl_env.event_transmission import (
+    MODEL_VERSION as EVENT_VERSION, EventTransmissionConfig, EventTransmissionEnv,
+)
 from generate_task_catalogs import build_records, geographic_points
 
 
@@ -32,6 +35,8 @@ METRICS = (
     "total_ground_conflicts", "total_conflicts", "total_invalid_actions",
     "max_rolling_imaging_seconds", "contact_antenna_seconds", "episode_wall_seconds",
     "mean_ground_station_utilization",
+    "simulated_seconds", "event_transitions", "imaging_startup_count",
+    "downlink_startup_count", "imaging_power_on_seconds", "radio_power_on_seconds",
 )
 
 
@@ -113,6 +118,8 @@ def prepare_catalog(config, path, episode):
                    required_resolution_m=2.0, required_swath_km=10.0,
                    min_sun_elevation_deg=8.0,
                    observation_duration_seconds=config["env"]["point_observation_seconds"])
+        if config["protocol"] == EVENT_VERSION:
+            row["max_coordination_gap_steps"] = config["env"]["sequential_max_gap_steps"]
     write_csv(path, records)
 
 
@@ -120,12 +127,16 @@ def prepare_orbit(config, path, n):
     if path.exists():
         return
     env = config["env"]
+    sampling = (env["ephemeris_sampling_seconds"] if config["protocol"] == EVENT_VERSION
+                else env["step_duration_seconds"])
+    horizon_seconds = env["max_steps"]*env["step_duration_seconds"]
+    lookahead_seconds = env["planning_lookahead_steps"]*env["step_duration_seconds"]
     command = [sys.executable, str(ROOT/"scripts/build_kepler_ephemeris.py"),
                "--output", str(path), "--start-utc", config["start_utc"],
                "--satellites", str(n), "--planes", str(config["planes"][str(n)]),
-               "--max-steps", str(env["max_steps"]),
-               "--lookahead-steps", str(max(2, env["planning_lookahead_steps"])),
-               "--step-duration-seconds", str(env["step_duration_seconds"])]
+               "--max-steps", str(int(np.ceil(horizon_seconds/sampling))),
+               "--lookahead-steps", str(int(np.ceil(lookahead_seconds/sampling))+2),
+               "--step-duration-seconds", str(sampling)]
     for key, value in config["orbit"].items():
         command += ["--"+key.replace("_", "-"), str(value)]
     subprocess.run(command, cwd=ROOT, check=True)
@@ -163,7 +174,7 @@ def merge_training_seeds(rows):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=ROOT/"configs/transmission_load_v2.json")
+    parser.add_argument("--config", type=Path, default=ROOT/"configs/transmission_day_v3.json")
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--model-root", type=Path, default=ROOT/"runs/thousand_paper_suite/training")
     parser.add_argument("--methods")
@@ -179,16 +190,32 @@ def main():
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--full-day-smoke", action="store_true",
+                        help="Small two-satellite run retaining the full 86400-second event horizon")
     parser.add_argument("--save-all-ledgers", action="store_true")
     args = parser.parse_args()
     config = json.loads(args.config.read_text(encoding="utf-8"))
-    if config.get("protocol") != MODEL_VERSION:
+    if config.get("protocol") not in {MODEL_VERSION, EVENT_VERSION}:
         raise ValueError("Wrong protocol version")
-    if args.smoke:
+    event_mode = config["protocol"] == EVENT_VERSION
+    config_class = EventTransmissionConfig if event_mode else TransmissionConfig
+    env_class = EventTransmissionEnv if event_mode else TransmissionEnv
+    if args.full_day_smoke and not event_mode:
+        raise ValueError("--full-day-smoke requires the v3 event protocol")
+    if args.smoke or args.full_day_smoke:
         config.update(satellite_counts=[8], task_counts=[128, 256], episodes=1,
                       training_seeds=[701], methods=["priority"], planes={"8": 2})
-        config["env"].update(max_steps=240, candidate_k=8, neighbor_k=3,
-                             planning_lookahead_steps=10)
+        config["env"].update(max_steps=600 if event_mode else 240,
+                             candidate_k=8, neighbor_k=3,
+                             planning_lookahead_steps=120 if event_mode else 10)
+        if event_mode:
+            config["catalog"]["window_steps"] = [60, 240]
+        if args.full_day_smoke:
+            config.update(satellite_counts=[2], task_counts=[4, 8], planes={"2": 1})
+            config["orbit"]["walker_phasing"] = 0
+            config["env"]["max_steps"] = 86400
+            config["env"]["planning_lookahead_steps"] = 900
+            config["catalog"]["window_steps"] = [240, 960]
     config["satellite_counts"] = integer_list(args.satellites, config["satellite_counts"])
     config["task_counts"] = integer_list(args.task_counts, config["task_counts"])
     config["training_seeds"] = integer_list(args.training_seeds, config["training_seeds"])
@@ -205,7 +232,7 @@ def main():
     if args.policy == "priority":
         config["methods"] = ["priority"]
         config["training_seeds"] = [701]  # Diagnostic, not a trained-seed comparison.
-    TransmissionConfig(**config["env"])
+    config_class(**config["env"])
     for n in config["satellite_counts"]:
         if str(n) not in config["planes"]:
             raise ValueError(f"Explicit plane count needed in config for N={n}")
@@ -238,6 +265,8 @@ def main():
                         ROOT/"scripts/build_kepler_ephemeris.py", ROOT/"scripts/generate_task_catalogs.py"]
         if args.policy == "checkpoint":
             source_files += [ROOT/"scripts/evaluate_marl.py", ROOT/"scripts/marl_common.py"]
+        if event_mode:
+            source_files.append(ROOT/"src/sat_marl_env/event_transmission.py")
         identity = dict(config=config, policy=args.policy, jobs=plan,
                         device=args.device, save_all_ledgers=args.save_all_ledgers,
                         source_sha256={str(p.relative_to(ROOT)): sha(p) for p in source_files},
@@ -250,7 +279,7 @@ def main():
         else:
             if any(run_root.iterdir()) and set(run_root.iterdir()) != {lock_path}:
                 raise RuntimeError("Use an empty, dedicated v2 run root")
-            atomic_json(manifest_path, dict(protocol=MODEL_VERSION, identity=identity,
+            atomic_json(manifest_path, dict(protocol=config["protocol"], identity=identity,
                                            note="checkpoint evaluation is out-of-training-distribution; no retraining"))
         scenario = run_root/"scenario"
         scenario.mkdir(exist_ok=True)
@@ -296,25 +325,33 @@ def main():
                         for attr in ("candidate_k", "neighbor_k", "coalition_reservations",
                                      "reservation_ttl_steps", "reservation_failure_penalty"):
                             if attr in trained_env:
-                                options[attr] = trained_env[attr]
+                                if event_mode and attr == "reservation_ttl_steps":
+                                    options[attr] = trained_env[attr]*trained_env.get("step_duration_seconds", 30.)
+                                else:
+                                    options[attr] = trained_env[attr]
                     options.update(num_satellites=n, num_tasks=m, num_planes=config["planes"][str(n)],
                                    ephemeris_cache_path=str(scenario/f"orbit_n{n}.npz"),
                                    task_catalog_path=str(scenario/f"targets_episode{episode:03d}.csv"),
                                    task_layout="catalog", random_seed=config["scenario_seed"]+episode)
                     started = time.perf_counter()
-                    env = TransmissionEnv(TransmissionConfig(**options))
+                    env = env_class(config_class(**options))
                     obs, _ = env.reset(seed=config["scenario_seed"]+episode)
                     if checkpoint is not None and choose is None:
                         _, choose = build_policy(checkpoint, metrics, obs, device)
                     reset = getattr(choose, "reset_strategy", None)
                     if callable(reset):
                         reset()
-                    for _ in range(env.config.max_steps):
+                    while env.step_count < env.config.max_steps:
                         actions = choose(obs) if choose is not None else priority_actions(env, obs)
                         obs, _, terminated, truncated, _ = env.step(actions)
                         if all(terminated.values()) or all(truncated.values()):
                             break
                     summary = env.summary()
+                    summary.setdefault("simulated_seconds", env.step_count*env.config.step_duration_seconds)
+                    summary.setdefault("event_transitions", env.step_count)
+                    for attr in ("imaging_startup_count", "downlink_startup_count",
+                                 "imaging_power_on_seconds", "radio_power_on_seconds"):
+                        summary.setdefault(attr, 0.0)
                     summary["episode_wall_seconds"] = time.perf_counter()-started
                     row = dict(method=method, training_seed=seed, satellites=n, tasks=m,
                                episode=episode, scenario_seed=config["scenario_seed"]+episode,
@@ -330,11 +367,13 @@ def main():
                         representative = dict(summary=summary, acquisitions=env.acquisition_ledger(),
                                               task_outcomes=env.task_outcomes(),
                                               stations=[asdict(g) for g in env.ground_stations])
+                        if event_mode:
+                            representative["radio_power_sessions"] = env.radio_power_ledger()
                     if args.save_all_ledgers:
                         atomic_json(run_root/"ledgers"/key/f"episode{episode:03d}.json",
                                     dict(acquisitions=env.acquisition_ledger(), task_outcomes=env.task_outcomes()))
                     print(f"{key} episode {episode+1}/{config['episodes']}: observed={row['observation_success_tasks']} delivered={row['observation_and_downlink_success_tasks']}", flush=True)
-                result = dict(status="complete", protocol=MODEL_VERSION, job=job, episodes=rows,
+                result = dict(status="complete", protocol=config["protocol"], job=job, episodes=rows,
                               aggregate=aggregate(rows), representative=representative)
                 atomic_json(output, result)
             episode_rows.extend(result["episodes"])

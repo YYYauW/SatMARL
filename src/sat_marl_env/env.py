@@ -71,14 +71,7 @@ class SatTaskingEnv:
         self.config = config or EnvConfig()
         self._ephemeris: EphemerisCache | None = None
         if self.config.ephemeris_cache_path:
-            self._ephemeris = load_ephemeris_cache(
-                self.config.ephemeris_cache_path,
-                expected_satellites=self.config.num_satellites,
-                required_steps=(
-                    self.config.max_steps + self.config.planning_lookahead_steps
-                ),
-                expected_step_duration_seconds=self.config.step_duration_seconds,
-            )
+            self._ephemeris = self._load_ephemeris_input()
             start_utc = self._ephemeris.metadata.get("start_utc")
             if start_utc:
                 start = datetime.fromisoformat(str(start_utc).replace("Z", "+00:00"))
@@ -149,6 +142,14 @@ class SatTaskingEnv:
     @property
     def step_count(self) -> int:
         return self._step
+
+    def _load_ephemeris_input(self):
+        return load_ephemeris_cache(
+            self.config.ephemeris_cache_path,
+            expected_satellites=self.config.num_satellites,
+            required_steps=self.config.max_steps + self.config.planning_lookahead_steps,
+            expected_step_duration_seconds=self.config.step_duration_seconds,
+        )
 
     @property
     def satellites(self) -> tuple[SatelliteState, ...]:
@@ -344,7 +345,7 @@ class SatTaskingEnv:
             self._team_reward_total += team_bonus * len(self.agents)
 
         self._advance_dynamics()
-        self._step += 1
+        self._advance_clock()
         self._expire_tasks()
         self._expire_collaboration_progress()
         self._expire_reservations(rewards, infos)
@@ -362,6 +363,9 @@ class SatTaskingEnv:
         if spaces is None:
             return None
         return spaces.Discrete(self.config.candidate_k + 2)
+
+    def _advance_clock(self) -> None:
+        self._step += 1
 
     def observation_space(self, agent: str | None = None):
         if spaces is None:
@@ -2384,7 +2388,7 @@ class SatTaskingEnv:
     ) -> bool:
         agent, _, _, plan = claim
         sat = self._satellites[self._agent_index(agent)]
-        finish_step = int(plan["finish_step"])
+        finish_step = self._plan_finish_index(plan)
         sat.energy = max(0.0, sat.energy - float(plan["total_energy"]))
         storage_required = float(plan["storage_required_mb"])
         sat.storage += storage_required
@@ -2949,11 +2953,11 @@ class SatTaskingEnv:
         best_group: list[Claim] = []
         best_score = -math.inf
         for anchor in contenders:
-            anchor_finish = int(anchor[3]["finish_step"])
+            anchor_finish = self._plan_finish_index(anchor[3])
             compatible = [
                 claim
                 for claim in contenders
-                if abs(int(claim[3]["finish_step"]) - anchor_finish) <= tolerance
+                if abs(self._plan_finish_index(claim[3]) - anchor_finish) <= tolerance
             ]
             compatible.sort(key=lambda claim: claim[1], reverse=True)
             group = compatible[:required]
@@ -2963,6 +2967,9 @@ class SatTaskingEnv:
                     best_score = score
                     best_group = group
         return best_group
+
+    def _plan_finish_index(self, plan: Plan):
+        return int(plan["finish_step"])
 
     def _best_visible_station(self, sat_idx: int) -> tuple[int, float] | None:
         return self._station_cache[sat_idx][0] if self._station_cache[sat_idx] else None

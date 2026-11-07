@@ -49,6 +49,24 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.integer_list(value, [])
 
+    def test_day_catalog_covers_the_day_with_second_units(self):
+        config = json.loads((ROOT/"configs/transmission_day_v3.json").read_text(encoding="utf-8"))
+        config["task_counts"] = [128]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"targets.csv"
+            runner.prepare_catalog(config, path, 0)
+            with path.open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        releases = [int(row["release_step"]) for row in rows]
+        self.assertLess(min(releases), 3600)
+        self.assertGreater(max(releases), 23*3600)
+        for row in rows:
+            duration = int(row["deadline_step"])-int(row["release_step"])
+            self.assertGreaterEqual(duration, 240)
+            self.assertLessEqual(duration, 960)
+            self.assertEqual(row["observation_duration_seconds"], "5.0")
+            self.assertEqual(row["max_coordination_gap_steps"], "3600")
+
     def test_merge_treats_training_seed_as_unit(self):
         rows = []
         for seed, value in ((701, 10), (702, 20)):

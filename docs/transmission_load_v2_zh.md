@@ -1,5 +1,7 @@
 # 光学遥感卫星观测与数据交付测试 v2
 
+此文档保留v2条件。当前入口默认采用全天事件计时v3，见 `docs/transmission_day_v3_zh.md`。复现本文全部v2命令时，应显式添加 `--config configs/transmission_load_v2.json`。
+
 本版入口为 `scripts/run_transmission_load.py`，协议为 `optical-ground-delivery-v2`。
 旧的 `configs/thousand_paper_suite.json`、训练权重和历史结果保持不变。
 新入口使用 `TransmissionEnv`；直接运行旧的 `evaluate_marl.py` 仍使用原环境。
